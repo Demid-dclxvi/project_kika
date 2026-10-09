@@ -347,6 +347,8 @@ void dump_double(std::string& out, double d) {
 }
 
 void dump_value(std::string& out, const Value& v, int indent, int level) {
+  const char* item_sep = indent == kCompact ? "," : (indent < 0 ? ", " : ",");
+  const char* key_sep = indent == kCompact ? ":" : ": ";
   auto newline = [&](int lv) {
     if (indent < 0) return;
     out += '\n';
@@ -376,7 +378,7 @@ void dump_value(std::string& out, const Value& v, int indent, int level) {
       }
       out += '[';
       for (std::size_t i = 0; i < a.size(); ++i) {
-        if (i) out += indent < 0 ? ", " : ",";
+        if (i) out += item_sep;
         newline(level + 1);
         dump_value(out, a[i], indent, level + 1);
       }
@@ -392,10 +394,10 @@ void dump_value(std::string& out, const Value& v, int indent, int level) {
       }
       out += '{';
       for (std::size_t i = 0; i < o.size(); ++i) {
-        if (i) out += indent < 0 ? ", " : ",";
+        if (i) out += item_sep;
         newline(level + 1);
         dump_string(out, o[i].first);
-        out += ": ";
+        out += key_sep;
         dump_value(out, o[i].second, indent, level + 1);
       }
       newline(level);

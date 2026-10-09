@@ -73,10 +73,12 @@ jobs:
           & $exe;            if ($LASTEXITCODE -ne 0) { throw 'kika без аргументов' }
           & $exe prototype/examples/bracket_side.gcode
           if ($LASTEXITCODE -ne 0) { throw 'kika <файл>' }
-          & $exe run prototype/examples/bracket_side.job.json --max-elems 20000 --json итоги.json
+          & $exe run prototype/examples/bracket_side.job.json --max-elems 20000 --json итоги.json -o пример-отчёта/кронштейн_отчёт.html
           if ($LASTEXITCODE -ne 0) { throw 'kika run <задание>' }
           $s = Get-Content итоги.json -Raw -Encoding utf8 | ConvertFrom-Json
           if ($s.Count -ne 3 -or $s[0].verdict -ne 'ok') { throw 'kika run: неожиданные итоги' }
+          $r = Get-Content пример-отчёта/кронштейн_отчёт.html -Raw -Encoding utf8
+          if ($r -notmatch 'window\.FDM_PAYLOAD = "H4sI') { throw 'kika run: в отчёте нет данных для 3D-вида' }
 
       - name: Python для сверки с прототипом
         if: runner.os == 'Linux'
@@ -96,4 +98,12 @@ jobs:
         with:
           name: kika-windows-x64
           path: build/${{ matrix.preset }}/bin/*.exe
+          retention-days: 30
+
+      - name: Пример отчёта
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kika-report-example
+          path: пример-отчёта/*.html
           retention-days: 30

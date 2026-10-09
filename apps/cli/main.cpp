@@ -21,11 +21,17 @@
 #include "kika/gcode/parser.hpp"
 #include "kika/material/material.hpp"
 #include "kika/parallel.hpp"
+#include "kika/report/report.hpp"
 #include "kika/util/json.hpp"
 #include "kika/version.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
+// после windows.h
+#include <objbase.h>
+#include <shellapi.h>
+#else
+#include <cstdlib>
 #endif
 
 namespace {
@@ -58,6 +64,8 @@ std::string read_file(const fs::path& p) {
 }
 
 void write_file(const fs::path& p, const std::string& text) {
+  std::error_code ec;
+  if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);  // папку для отчёта создаём сами
   std::ofstream f(p, std::ios::binary);
   if (!f) throw std::runtime_error("Не удалось создать файл: " + utf8_from_path(p));
   f << text;
@@ -325,8 +333,32 @@ struct RunOptions {
   std::optional<double> voxel;
   std::optional<long long> max_elems;
   std::optional<double> tol;
+  std::optional<std::string> report_out;  // пусто — рядом с заданием
+  bool no_report = false;
+  bool open_report = false;  // открыть отчёт в браузере
   bool quiet = false;
 };
+
+// Открыть файл программой по умолчанию (отчёт — в браузере).
+void open_in_browser(const fs::path& p) {
+#ifdef _WIN32
+  // ShellExecute может передать работу расширениям оболочки — им нужен COM
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  const auto rc = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", p.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+  if (rc <= 32) std::cerr << "Не удалось открыть отчёт в браузере\n";
+  if (SUCCEEDED(com)) CoUninitialize();
+#else
+  std::string q = utf8_from_path(p), arg = "'";
+  for (char c : q) arg += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  arg += "'";
+#ifdef __APPLE__
+  const std::string cmd = "open " + arg + " >/dev/null 2>&1 &";
+#else
+  const std::string cmd = "xdg-open " + arg + " >/dev/null 2>&1 &";
+#endif
+  if (std::system(cmd.c_str()) != 0) std::cerr << "Не удалось открыть отчёт в браузере\n";
+#endif
+}
 
 void dump_arrays(const fs::path& dir, const kika::analysis::Model& model,
                  const kika::analysis::AnalysisResult& res) {
@@ -396,6 +428,18 @@ int cmd_run(const RunOptions& o) {
     std::cout << "\nИтоги в JSON: " << *o.json_out << "\n";
   }
   if (o.dump_dir) dump_arrays(path_from_utf8(*o.dump_dir), model, res);
+  if (!o.no_report) {
+    // по умолчанию — рядом с заданием: так отчёт находится и при перетаскивании на kika.exe
+    fs::path out = o.report_out ? path_from_utf8(*o.report_out)
+                                : fs::absolute(job_path, ec).parent_path() /
+                                      path_from_utf8(utf8_from_path(gpath.stem()) + "_отчёт.html");
+    kika::report::ReportInfo info;
+    if (job.title) info.title = *job.title;
+    info.gcode_name = utf8_from_path(gpath.filename());
+    write_file(out, kika::report::report_html(model, res, job_json, info));
+    std::cout << "\nОтчёт: " << utf8_from_path(fs::absolute(out, ec)) << "\n";
+    if (o.open_report) open_in_browser(fs::absolute(out, ec));
+  }
   const double total = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   std::cout << "\nВсего " << num(total, 1) << " с\n";
   return 0;
@@ -430,11 +474,15 @@ void print_usage() {
   std::cout << "kika " << kika::kVersion << " — расчёт прочности деталей для FDM-печати\n\n"
             << "Перетащите на kika.exe файл G-code — программа покажет, что в нём найдено:\n"
             << "слайсер, пластик, слои, объём по типам линий. Перетащите файл задания (.json) —\n"
-            << "программа посчитает прочность детали по этому заданию.\n\n"
+            << "программа посчитает прочность детали и откроет отчёт с 3D-видом в браузере.\n\n"
             << "Из командной строки:\n"
             << "  kika деталь.gcode                         то же, что перетаскивание\n"
             << "  kika info деталь.gcode [--json]           сведения о печати\n"
             << "  kika run [деталь.gcode] задание.json      расчёт прочности\n"
+            << "      -o отчёт.html                         куда записать отчёт с 3D-видом\n"
+            << "                                            (по умолчанию — рядом с заданием)\n"
+            << "      --open                                открыть отчёт в браузере\n"
+            << "      --no-report                           без отчёта\n"
             << "      --json итоги.json                     записать итоги в JSON\n"
             << "      --voxel 0.5                           размер вокселя, мм\n"
             << "      --max-elems 150000                    предел числа элементов\n"
@@ -472,6 +520,7 @@ std::optional<int> run_dropped_files(const std::vector<std::string>& args) {
       RunOptions o;
       o.job = jobs[k];
       if (gcodes.size() == 1) o.gcode = gcodes[0];
+      o.open_report = own_console_window();
       try {
         cmd_run(o);
       } catch (const std::exception& e) {
@@ -534,6 +583,9 @@ int run_main(const std::vector<std::string>& args) {
                                  {{"--max-elems"}, true},
                                  {{"--threads"}, true},
                                  {{"--tol"}, true},
+                                 {{"-o", "--report"}, true},
+                                 {{"--no-report"}, false},
+                                 {{"--open"}, false},
                                  {{"-q", "--quiet"}, false}});
       RunOptions o;
       if (a.positional.size() == 1) {
@@ -551,6 +603,9 @@ int run_main(const std::vector<std::string>& args) {
       if (auto v = a.value("--tol")) o.tol = parse_number(*v, "--tol");
       if (auto v = a.value("--threads")) kika::set_thread_count(static_cast<int>(parse_number(*v, "--threads")));
       o.quiet = a.flag("--quiet");
+      o.report_out = a.value("--report");
+      o.no_report = a.flag("--no-report");
+      o.open_report = a.flag("--open");
       return finish(cmd_run(o));
     }
     throw UsageError("неизвестная команда «" + cmd + "» (или файл не найден)");

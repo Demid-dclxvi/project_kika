@@ -100,7 +100,11 @@ class Value {
 // Разбор текста JSON. Ошибка — ParseError с номером строки и столбца (по-русски).
 Value parse(std::string_view text);
 
-// Запись в текст. indent < 0 — в одну строку; иначе с отступами.
+// Без пробелов после «,» и «:» (как separators=(",", ":") в Python) — для данных внутри файлов.
+inline constexpr int kCompact = -2;
+
+// Запись в текст. indent = -1 — в одну строку, kCompact — в одну строку без пробелов;
+// indent ≥ 0 — с отступами.
 // Нечисловые значения (NaN, бесконечность) записываются как null, не-ASCII — как есть (UTF-8).
 std::string dump(const Value& v, int indent = -1);
 

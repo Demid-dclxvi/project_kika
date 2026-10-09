@@ -21,6 +21,7 @@ option(KIKA_WERROR "Считать предупреждения компилят
 include(cmake/CompilerOptions.cmake)
 
 add_subdirectory(src/core)
+add_subdirectory(src/report)
 add_subdirectory(apps/cli)
 
 if(KIKA_BUILD_TESTS)

@@ -1,6 +1,10 @@
 # Консольная программа kika: расчёт по файлам, без интерфейса.
-# Сторонних библиотек не нужно: параметры разбираются вручную, JSON — из ядра.
+# Параметры разбираются вручную, JSON — из ядра, отчёт — kika::report.
 
 add_executable(kika main.cpp)
-target_link_libraries(kika PRIVATE kika::core)
+target_link_libraries(kika PRIVATE kika::core kika::report)
+if(WIN32)
+  # открыть отчёт в браузере: ShellExecuteW, CoInitializeEx
+  target_link_libraries(kika PRIVATE shell32 ole32)
+endif()
 kika_set_compile_options(kika)

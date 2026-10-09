@@ -4,3 +4,6 @@
 *.min.js -diff
 *.bat text eol=crlf
 *.sh text eol=lf
+
+# сторонний просмотрщик: не сравнивать построчно
+src/report/web/vendor/** -text -diff linguist-vendored

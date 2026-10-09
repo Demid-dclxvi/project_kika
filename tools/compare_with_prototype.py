@@ -7,7 +7,8 @@
    все отрезки (координаты, Z, толщина, объём, роль, слой) и все сведения о печати.
 2. Расчёт (`kika run`): задания кронштейнов, все виды нагрузок, консольная балка.
    Сравниваются итоги каждого случая (запас, перемещения, реакции, тексты, предупреждения),
-   воксельная модель и поля по элементам (перемещения, запас, напряжения, вид разрушения).
+   воксельная модель и поля по элементам (перемещения, запас, напряжения, вид разрушения),
+   а также HTML-отчёт: данные 3D-просмотра и весь видимый текст (кроме даты, времени, версии).
    Оба решателя итерационные; чтобы сравнивать без их погрешности, обе версии решают
    с невязкой 1e-11 (обычно 1e-7). Допуск 1e-5 — из-за float32 в полях прототипа.
 
@@ -352,8 +353,9 @@ def compare_analysis(kika: str, gcode: str, job: dict, max_elems: int, voxel, wo
         json.dump(job, f, ensure_ascii=False)
     out_json = os.path.join(workdir, "out.json")
     dump = os.path.join(workdir, "dump")
+    report = os.path.join(workdir, "report.html")
     args = [kika, "run", gcode, jp, "--json", out_json, "--dump", dump, "--max-elems", str(max_elems), "--quiet",
-            "--tol", str(SOLVER_TOL)]
+            "--tol", str(SOLVER_TOL), "-o", report]
     if voxel:
         args += ["--voxel", str(voxel)]
     p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
@@ -362,7 +364,7 @@ def compare_analysis(kika: str, gcode: str, job: dict, max_elems: int, voxel, wo
     with open(out_json, encoding="utf-8") as f:
         cpp = json.load(f)
     model = Model(gcode=gcode, voxel=voxel, max_elems=max_elems)
-    _, res = run(model, job)
+    analysis, res = run(model, job)
 
     def ld(name, dtype=np.float64):
         return np.fromfile(os.path.join(dump, name), dtype=dtype)
@@ -402,7 +404,86 @@ def compare_analysis(kika: str, gcode: str, job: dict, max_elems: int, voxel, wo
         nmode = int((ld(f"case{k}_mode.bin", np.int8) != r.mode).sum())
         if nmode > 1e-4 * len(r.mode):
             problems.append(f"{name}: вид разрушения различается в {nmode} элементах")
+    with open(report, encoding="utf-8") as f:
+        problems += compare_report(f.read(), model, analysis, res, job, gcode)
     return problems
+
+
+def _report_payload(html: str) -> dict:
+    import base64
+    import gzip
+    import re
+
+    m = re.search(r'window\.FDM_PAYLOAD = "([^"]*)"', html)
+    return json.loads(gzip.decompress(base64.b64decode(m.group(1))))
+
+
+def _report_text(html: str) -> str:
+    """Видимая часть отчёта без даты, времени расчёта и версии программы."""
+    import re
+
+    body = html[html.index('<div class="page">'):html.index("<script>")]
+    body = re.sub(r"\d\d\.\d\d\.\d{4} \d\d:\d\d", "", body)
+    return re.sub(r"время расчёта [\d,]+ с · (fdmfea|kika) [\d.]+", "", body)
+
+
+def compare_report(html_cpp: str, model, analysis, res, job: dict, gcode: str) -> list[str]:
+    import base64
+
+    from fdmfea.export import report_html
+
+    html_py = report_html(model, analysis, res, job, title=job.get("title"), gcode_name=os.path.basename(gcode))
+    pc, pp = _report_payload(html_cpp), _report_payload(html_py)
+    problems = []
+    skip = {"solver", "build_time", "total_time", "date", "version", "sf_xyz", "sf_min_xyz", "max_disp_xyz",
+            "max_disp_vec"}  # точки экстремумов уже сверены выше (с учётом симметрии)
+
+    def walk(a, b, path):
+        if isinstance(b, dict):
+            if not isinstance(a, dict):
+                problems.append(f"отчёт {path}: C++ {a!r}")
+                return
+            is_model = "node_flat" in b
+            is_case = "u" in b and "sel" in b
+            for k, v in b.items():
+                if k in skip:
+                    continue
+                if k not in a:
+                    problems.append(f"отчёт {path}.{k}: нет в C++")
+                elif (is_model and k in ("elems", "role", "rho", "node_flat")) or (is_case and k == "sel"):
+                    if a[k] != v:
+                        problems.append(f"отчёт {path}.{k}: различается")
+                elif is_case and k in ("sf", "vm", "u", "mode"):
+                    dt = np.uint8 if k == "mode" else np.float32
+                    x = np.frombuffer(base64.b64decode(a[k]), dtype=dt).astype(float)
+                    y = np.frombuffer(base64.b64decode(v), dtype=dt).astype(float)
+                    if x.shape != y.shape:
+                        problems.append(f"отчёт {path}.{k}: размеры {x.shape} и {y.shape}")
+                    elif k == "mode":
+                        if (x != y).sum() > 1e-4 * len(y):
+                            problems.append(f"отчёт {path}.{k}: различается")
+                    elif np.abs(x - y).max() > 1e-5 * max(float(np.abs(y).max()), 1e-30):
+                        problems.append(f"отчёт {path}.{k}: расходится")
+                else:
+                    walk(a[k], v, f"{path}.{k}")
+        elif isinstance(b, list):
+            if not isinstance(a, list) or len(a) != len(b):
+                problems.append(f"отчёт {path}: C++ {a!r}, Python {b!r}")
+            else:
+                for i, (x, y) in enumerate(zip(a, b)):
+                    walk(x, y, f"{path}[{i}]")
+        elif b is None or isinstance(b, (bool, str)):
+            if a != b:
+                problems.append(f"отчёт {path}: C++ {a!r}, Python {b!r}")
+        elif a is None or isinstance(a, (bool, str)) or not math.isclose(float(a), float(b), rel_tol=2e-4,
+                                                                          abs_tol=1e-4):
+            # итоги в отчёте округлены до 4 знаков — отсюда допуск
+            problems.append(f"отчёт {path}: C++ {a!r}, Python {b!r}")
+
+    walk(pc, pp, "")
+    if _report_text(html_cpp) != _report_text(html_py):
+        problems.append("отчёт: видимый текст (шапка, карточки случаев, справка) различается")
+    return problems[:20]
 
 
 def main() -> int:

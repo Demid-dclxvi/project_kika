@@ -7,7 +7,8 @@
 | Библиотека | Версия | Лицензия | Где | Как подключена |
 | --- | --- | --- | --- | --- |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | только тесты, в продукт не входит | статически |
-| [three.js](https://threejs.org) | из прототипа | MIT | просмотрщик в прототипе | файлом |
+| [zlib](https://zlib.net) | 1.3.x (по baseline vcpkg) | Zlib | сжатие данных в HTML-отчёте (`src/report`) | статически, через vcpkg |
+| [three.js](https://threejs.org) | r149 | MIT | 3D-просмотр в HTML-отчёте | файл `src/report/web/vendor/three.min.js` встраивается в программу и в каждый отчёт; уведомление об авторских правах — в начале файла, текст лицензии — `three.LICENSE.txt` рядом |
 
 Версии фиксирует `vcpkg-configuration.json` (baseline реестра vcpkg).
 
