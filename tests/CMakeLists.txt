@@ -1,11 +1,14 @@
 find_package(Catch2 3 CONFIG REQUIRED)
 
 add_executable(kika_tests
+  analysis/test_analysis.cpp
+  analysis/test_job.cpp
   fem/test_fem.cpp
   gcode/test_roles.cpp
   gcode/test_parser.cpp
   gcode/test_examples.cpp
   material/test_material.cpp
+  util/test_json.cpp
   voxel/test_voxel.cpp
 )
 target_link_libraries(kika_tests PRIVATE kika::core Catch2::Catch2WithMain)

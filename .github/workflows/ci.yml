@@ -61,7 +61,7 @@ jobs:
       - name: kika.exe запускается на чистой Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: |
           $exe = "build/${{ matrix.preset }}/bin/kika.exe"
           $deps = (dumpbin /nologo /dependents $exe | Out-String)
@@ -73,6 +73,10 @@ jobs:
           & $exe;            if ($LASTEXITCODE -ne 0) { throw 'kika без аргументов' }
           & $exe prototype/examples/bracket_side.gcode
           if ($LASTEXITCODE -ne 0) { throw 'kika <файл>' }
+          & $exe run prototype/examples/bracket_side.job.json --max-elems 20000 --json итоги.json
+          if ($LASTEXITCODE -ne 0) { throw 'kika run <задание>' }
+          $s = Get-Content итоги.json -Raw -Encoding utf8 | ConvertFrom-Json
+          if ($s.Count -ne 3 -or $s[0].verdict -ne 'ok') { throw 'kika run: неожиданные итоги' }
 
       - name: Python для сверки с прототипом
         if: runner.os == 'Linux'
@@ -83,7 +87,7 @@ jobs:
       - name: Сверка с прототипом на Python
         if: runner.os == 'Linux'
         run: |
-          python -m pip install --quiet numpy
+          python -m pip install --quiet numpy scipy
           python tools/compare_with_prototype.py --kika build/${{ matrix.preset }}/bin/kika
 
       - name: Программа для Windows

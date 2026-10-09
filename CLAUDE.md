@@ -14,5 +14,7 @@
 
 - Пресеты: `win-debug`, `win-release`, `linux-debug`, `linux-release`; в CI — `ci-windows`, `ci-linux` (предупреждения = ошибки).
 - `cmake --preset linux-release && cmake --build --preset linux-release && ctest --preset linux-release`.
-- В облачной среде Claude скачивание исходников библиотек с github.com/codeload закрыто сетевой политикой, поэтому vcpkg там не собирает зависимости. Ядро без сторонних библиотек проверять прямой сборкой g++/clang++ (`-std=c++20 -Wall -Wextra -Wpedantic -Wshadow -Werror`), полную сборку и тесты — через GitHub Actions (`gh run watch`).
+- Ядро и консольная программа — без сторонних библиотек (JSON свой, `kika::json`); через vcpkg подключается только Catch2 для тестов. Новые зависимости в ядро — только если своё писать неразумно.
+- В облачной среде Claude скачивание исходников библиотек с github.com/codeload закрыто сетевой политикой, поэтому vcpkg там не собирает Catch2. Ядро и `apps/cli` проверять прямой сборкой g++ и clang++ (`-std=c++20 -Wall -Wextra -Wpedantic -Wshadow -Werror`, нужен `-pthread`), полную сборку с тестами — через GitHub Actions (`gh run watch`; логи CI оттуда не скачиваются, видны только статусы шагов).
+- Сверка с прототипом: `python tools/compare_with_prototype.py --kika <путь к kika>` (нужны numpy и scipy).
 - Демид собирает на Windows в Visual Studio; готовый `kika.exe` берёт из артефактов CI.

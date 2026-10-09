@@ -2,6 +2,9 @@
 # позже — приложение на Qt и серверные расчёты.
 
 add_library(kika_core
+  src/analysis/analysis.cpp
+  src/analysis/job.cpp
+  src/analysis/loads.cpp
   src/gcode/parser.cpp
   src/gcode/roles.cpp
   src/gcode/toolpaths.cpp
@@ -13,6 +16,7 @@ add_library(kika_core
   src/linalg/sparse.cpp
   src/material/builtin.cpp
   src/material/material.cpp
+  src/util/json.cpp
   src/util/parallel.cpp
   src/util/text.cpp
   src/voxel/voxelize.cpp

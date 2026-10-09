@@ -7,7 +7,9 @@ namespace kika::fem {
 
 Mesh build_mesh(const voxel::VoxelModel& vm) {
   Mesh m;
-  m.vm = &vm;
+  m.s = vm.s;
+  m.sx = vm.sx;
+  m.sy = vm.sy;
   const std::size_t n = vm.size();
   m.n_elems = static_cast<std::int64_t>(n);
   const std::int64_t nx1 = vm.nx + 1, ny1 = vm.ny + 1;

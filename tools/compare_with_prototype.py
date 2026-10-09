@@ -1,11 +1,18 @@
-"""Сверка разбора G-code: C++ (kika) против прототипа на Python (prototype/fdmfea/gcode.py).
+"""Сверка C++ (kika) с прототипом на Python: разбор G-code и расчёт прочности.
 
 Запуск:
     python tools/compare_with_prototype.py --kika build/linux-release/bin/kika [файлы.gcode ...]
 
-Без файлов сверяются примеры прототипа и синтетические случаи из его тестов.
-Нужен numpy. Сравниваются все отрезки (координаты, Z, толщина, объём, роль, слой)
-и все сведения о печати. Выход с кодом 1, если есть расхождения.
+1. Разбор G-code. Без файлов сверяются примеры прототипа и синтетические случаи из его тестов:
+   все отрезки (координаты, Z, толщина, объём, роль, слой) и все сведения о печати.
+2. Расчёт (`kika run`): задания кронштейнов, все виды нагрузок, консольная балка.
+   Сравниваются итоги каждого случая (запас, перемещения, реакции, тексты, предупреждения),
+   воксельная модель и поля по элементам (перемещения, запас, напряжения, вид разрушения).
+   Оба решателя итерационные; чтобы сравнивать без их погрешности, обе версии решают
+   с невязкой 1e-11 (обычно 1e-7). Допуск 1e-5 — из-за float32 в полях прототипа.
+
+Нужны numpy и scipy (scipy — только для расчёта прототипом; без него шаг 2 пропускается
+с ошибкой). --skip-analysis — только разбор G-code. Выход с кодом 1, если есть расхождения.
 """
 from __future__ import annotations
 
@@ -216,9 +223,192 @@ def compare(kika: str, path: str, workdir: str) -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# Расчёт
+
+# Задание из prototype/tests/test_all_loads.py: все виды нагрузок на кронштейне.
+_HOLES = [{"hole": {"axis": "x", "center": [12.0, 15.0], "radius": 2.5}},
+          {"hole": {"axis": "x", "center": [28.0, 15.0], "radius": 2.5}}]
+_ARM_TOP = {"box": {"min": [55, 40, 0], "max": [70, 50, 30]}, "normal": "+y"}
+_HANG = {"hole": {"axis": "y", "center": [62.0, 15.0], "radius": 4.0}}
+ALL_LOADS_JOB = {
+    "material": "PETG", "target_sf": 2.0,
+    "fixtures": [{"where": _HOLES}, {"where": {"side": "xmin"}, "components": "x"}],
+    "cases": [
+        {"name": "Сила 30 Н", "loads": [{"type": "force", "where": _ARM_TOP, "vector": [0, -30, 0]}]},
+        {"name": "Сила по величине и направлению",
+         "loads": [{"type": "force", "where": _ARM_TOP, "value": 30, "direction": "-y"}]},
+        {"name": "Груз 1 кг на вынесенной точке",
+         "loads": [{"type": "mass", "where": _HANG, "kg": 1, "direction": "-y", "point": [62, 20, 15]}]},
+        {"name": "Давление 0,05 МПа", "loads": [{"type": "pressure", "where": {"side": "ymax"}, "value": 0.05}]},
+        {"name": "Кручение 2 Н·м",
+         "loads": [{"type": "moment", "where": {"side": "xmax"}, "axis": "+x", "value": 2000}]},
+        {"name": "Болт 40 Н", "loads": [{"type": "bearing", "where": _HANG, "vector": [0, -40, 0]}]},
+        {"name": "Удар 0,3 кг с 100 мм",
+         "loads": [{"type": "impact", "where": _ARM_TOP, "kg": 0.3, "height": 100, "direction": "-y"}]},
+        {"name": "Прогиб конца 1 мм",
+         "loads": [{"type": "displacement", "where": {"side": "xmax"}, "vector": [None, -1.0, None]}]},
+        {"name": "Перегрузка 20 g", "loads": [{"type": "gravity", "g": [0, -20, 0]}]},
+        {"name": "Вибрация 10 Н, 10^6 циклов", "duration": "cyclic", "cycles": 1e6,
+         "loads": [{"type": "force", "where": _ARM_TOP, "vector": [0, -10, 0]}]},
+        {"name": "Нагрев 60 °C, длительно, зажат", "duration": "long", "temperature": 60,
+         "thermal_expansion": True,
+         "fixtures": [{"where": _HOLES}, {"where": {"side": "xmin"}}, {"where": {"side": "xmax"}}],
+         "loads": [{"type": "gravity", "g": [0, -1, 0]}]},
+    ],
+}
+
+
+def _cantilever_job(upright: bool) -> dict:
+    if upright:
+        return {"material": "PLA", "cases": [{"name": "изгиб", "fixtures": [{"where": "zmin"}],
+                                              "loads": [{"type": "force", "where": "zmax", "vector": [50, 0, 0]}]}]}
+    return {"material": "PLA", "cases": [{"name": "изгиб", "fixtures": [{"where": "xmin"}],
+                                          "loads": [{"type": "force", "where": "xmax", "vector": [0, 0, -50]}]}]}
+
+
+def analysis_cases():
+    ex = os.path.join(ROOT, "prototype", "examples")
+    data = os.path.join(ROOT, "tests", "data")
+    out = []
+    for name in ("bracket_side", "bracket_upright"):
+        with open(os.path.join(ex, name + ".job.json"), encoding="utf-8") as f:
+            out.append((name, os.path.join(ex, name + ".gcode"), json.load(f), 40000, None))
+    out.append(("все виды нагрузок", os.path.join(ex, "bracket_side.gcode"), ALL_LOADS_JOB, 25000, None))
+    out.append(("балка плашмя", os.path.join(data, "cantilever_flat.gcode"), _cantilever_job(False), 120000, 1.0))
+    out.append(("балка стоя", os.path.join(data, "cantilever_upright.gcode"), _cantilever_job(True), 120000, 1.0))
+    return out
+
+
+def compare_values(a, b, path: str) -> list[str]:
+    """a — C++, b — прототип."""
+    if isinstance(b, dict):
+        if not isinstance(a, dict):
+            return [f"{path}: C++ {a!r}, Python {b!r}"]
+        out = []
+        for k, v in b.items():
+            if k == "solver":  # у решателей разное число итераций и время
+                continue
+            if k not in a:
+                out.append(f"{path}.{k}: нет в C++")
+            else:
+                out += compare_values(a[k], v, f"{path}.{k}")
+        return out
+    if isinstance(b, (list, tuple)):
+        if not isinstance(a, list) or len(a) != len(b):
+            return [f"{path}: C++ {a!r}, Python {b!r}"]
+        out = []
+        for i, (x, y) in enumerate(zip(a, b)):
+            out += compare_values(x, y, f"{path}[{i}]")
+        return out
+    if b is None or isinstance(b, (bool, str)):
+        return [] if a == b else [f"{path}: C++ {a!r}, Python {b!r}"]
+    if a is None or isinstance(a, (bool, str)):
+        return [f"{path}: C++ {a!r}, Python {b!r}"]
+    if math.isclose(float(a), float(b), rel_tol=1e-5, abs_tol=1e-9):
+        return []
+    return [f"{path}: C++ {a!r}, Python {float(b)!r}"]
+
+
+SOLVER_TOL = 1e-11
+
+
+def _strict_prototype_solver():
+    """Прототип решает с той же строгой точностью, что и C++ при сверке."""
+    import inspect
+
+    from fdmfea import fem  # нужен scipy
+
+    params = list(inspect.signature(fem.Solver.__init__).parameters)
+    if params[4:8] != ["cells", "log", "tol", "springs"]:
+        raise RuntimeError(f"изменилась сигнатура fem.Solver: {params}")
+    fem.Solver.__init__.__defaults__ = (None, None, SOLVER_TOL, 1e-12)
+
+
+# Точка экстремума может оказаться в другом, симметричном месте с тем же значением.
+_TIES = [("sf_xyz", "sf"), ("sf_min_xyz", "sf_min"), ("max_disp_xyz", "max_disp"), ("max_disp_vec", "max_disp")]
+
+
+def _accept_ties(cpp: dict, py: dict) -> list[str]:
+    notes = []
+    for where, value in _TIES:
+        if where not in cpp or not compare_values(cpp[where], py[where], where):
+            continue  # совпадает
+        if compare_values(cpp[value], py[value], value):
+            continue  # значение тоже другое — это настоящее расхождение
+        if where == "max_disp_vec" and not math.isclose(math.hypot(*cpp[where]), cpp[value], rel_tol=1e-9):
+            continue
+        notes.append(f"{where}: другая точка с тем же значением ({cpp[where]} и {py[where]})")
+        cpp[where] = py[where]
+    return notes
+
+
+def compare_analysis(kika: str, gcode: str, job: dict, max_elems: int, voxel, workdir: str) -> list[str]:
+    _strict_prototype_solver()
+    from fdmfea.analysis import Model, run
+
+    jp = os.path.join(workdir, "job.json")
+    with open(jp, "w", encoding="utf-8") as f:
+        json.dump(job, f, ensure_ascii=False)
+    out_json = os.path.join(workdir, "out.json")
+    dump = os.path.join(workdir, "dump")
+    args = [kika, "run", gcode, jp, "--json", out_json, "--dump", dump, "--max-elems", str(max_elems), "--quiet",
+            "--tol", str(SOLVER_TOL)]
+    if voxel:
+        args += ["--voxel", str(voxel)]
+    p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
+    if p.returncode != 0:
+        return [f"kika run завершился с ошибкой: {p.stderr.strip()}"]
+    with open(out_json, encoding="utf-8") as f:
+        cpp = json.load(f)
+    model = Model(gcode=gcode, voxel=voxel, max_elems=max_elems)
+    _, res = run(model, job)
+
+    def ld(name, dtype=np.float64):
+        return np.fromfile(os.path.join(dump, name), dtype=dtype)
+
+    problems = []
+    vm = model.vm
+    for name, x, y in [("плотность стенок", ld("voxel_rho_shell.bin"), vm.rho_shell),
+                       ("плотность заполнения", ld("voxel_rho_sparse.bin"), vm.rho_sparse),
+                       ("направления стенок", ld("voxel_hist_shell.bin"), vm.hist_shell.ravel()),
+                       ("направления заполнения", ld("voxel_hist_sparse.bin"), vm.hist_sparse.ravel()),
+                       ("номера вокселей", ld("voxel_flat.bin", np.int64), vm.flat())]:
+        if x.shape != y.shape or not np.allclose(x, y, rtol=1e-9, atol=1e-12):
+            problems.append(f"воксели, {name}: расходятся")
+    if len(cpp) != len(res):
+        return problems + [f"число случаев: C++ {len(cpp)}, Python {len(res)}"]
+    for k, r in enumerate(res):
+        name = r.summary["name"]
+        for note in _accept_ties(cpp[k], r.summary):
+            print(f"    {name}: {note}")
+        problems += compare_values(cpp[k], r.summary, name)
+        # поля прототипа хранятся во float32 — сравниваем относительно максимума
+        u = ld(f"case{k}_u.bin").reshape(-1, 3)
+        sf = ld(f"case{k}_sf.bin")
+        fields = {
+            "перемещения": (u, r.u),
+            "1/запас": (1 / sf, 1 / r.sf.astype(np.float64)),
+            "напряжения": (ld(f"case{k}_sigma.bin").reshape(-1, 6), r.sigma),
+            "эквивалентное напряжение": (ld(f"case{k}_vm.bin"), r.vm),
+        }
+        for fname, (x, y) in fields.items():
+            if x.shape != y.shape:
+                problems.append(f"{name}: {fname}: размеры {x.shape} и {y.shape}")
+                continue
+            err = float(np.abs(x - y).max() / max(float(np.abs(y).max()), 1e-300))
+            if err > 1e-5:
+                problems.append(f"{name}: {fname}: отн. расхождение {err:.2e}")
+        nmode = int((ld(f"case{k}_mode.bin", np.int8) != r.mode).sum())
+        if nmode > 1e-4 * len(r.mode):
+            problems.append(f"{name}: вид разрушения различается в {nmode} элементах")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--kika", required=True, help="путь к программе kika")
+    ap.add_argument("--skip-analysis", action="store_true", help="не сверять расчёт (только разбор G-code)")
     ap.add_argument("files", nargs="*", help="файлы G-code (по умолчанию — примеры и синтетика)")
     a = ap.parse_args()
 
@@ -244,8 +434,30 @@ def main() -> int:
                     print("    " + p)
             else:
                 print(f"совпадает    {name}")
-    print(f"\nИтого: {len(cases) - failed} из {len(cases)} совпадают с прототипом.")
-    return 1 if failed else 0
+    print(f"\nРазбор G-code: {len(cases) - failed} из {len(cases)} совпадают с прототипом.")
+    total_failed = failed
+
+    if not a.skip_analysis and not a.files:
+        print()
+        acases = analysis_cases()
+        failed = 0
+        for name, gcode, job, max_elems, voxel in acases:
+            with tempfile.TemporaryDirectory() as tmp:
+                try:
+                    problems = compare_analysis(a.kika, gcode, job, max_elems, voxel, tmp)
+                except ImportError as e:
+                    print(f"Расчёт прототипом невозможен: {e}. Установите: python -m pip install numpy scipy")
+                    return 1
+            if problems:
+                failed += 1
+                print(f"РАСХОЖДЕНИЕ  расчёт: {name}")
+                for p in problems[:30]:
+                    print("    " + p)
+            else:
+                print(f"совпадает    расчёт: {name}")
+        print(f"\nРасчёт: {len(acases) - failed} из {len(acases)} совпадают с прототипом.")
+        total_failed += failed
+    return 1 if total_failed else 0
 
 
 if __name__ == "__main__":

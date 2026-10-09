@@ -12,7 +12,9 @@
 namespace kika::fem {
 
 struct Mesh {
-  const voxel::VoxelModel* vm = nullptr;
+  double s = 0;   // характерный размер вокселя (для допусков при выборе граней), мм
+  double sx = 0;  // размеры вокселя в плане, мм
+  double sy = 0;
 
   std::int64_t n_nodes = 0;
   std::int64_t n_elems = 0;

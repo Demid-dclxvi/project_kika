@@ -24,6 +24,8 @@ constexpr char to_lower(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<ch
 std::string_view trim(std::string_view s);
 std::string to_upper(std::string_view s);
 std::string to_lower(std::string_view s);
+// Нижний регистр для латиницы и кириллицы в UTF-8 (как str.lower() в Python для этих букв).
+std::string to_lower_utf8(std::string_view s);
 
 // Число как float() в Python: пробелы по краям, знак, десятичная/экспоненциальная запись, inf, nan.
 // nullopt, если строка — не число целиком.

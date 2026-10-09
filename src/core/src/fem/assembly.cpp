@@ -77,11 +77,13 @@ linalg::CsrMatrix assemble(const Mesh& mesh, std::span<const CVec> cvec) {
   // добавление матриц элементов. Элементы раскрашены в 8 цветов по чётности (i, j, k):
   // элементы одного цвета не имеют общих узлов, поэтому внутри цвета их можно добавлять
   // параллельно, а порядок сложений в каждой ячейке (по цветам) не зависит от числа потоков.
-  const voxel::VoxelModel& vm = *mesh.vm;
   std::array<std::vector<std::int32_t>, 8> colors;
-  for (std::size_t e = 0; e < ne; ++e)
-    colors[static_cast<std::size_t>((vm.ix[e] & 1) + 2 * (vm.iy[e] & 1) + 4 * (vm.iz[e] & 1))].push_back(
+  for (std::size_t e = 0; e < ne; ++e) {
+    // узел 0 элемента — его угол (ix, iy, iz)
+    const auto& ijk = mesh.node_ijk[static_cast<std::size_t>(mesh.elem_nodes[e][0])];
+    colors[static_cast<std::size_t>((ijk[0] & 1) + 2 * (ijk[1] & 1) + 4 * (ijk[2] & 1))].push_back(
         static_cast<std::int32_t>(e));
+  }
   for (const auto& list : colors) {
     util::parallel_for(0, list.size(), 256, [&](std::size_t lo, std::size_t hi) {
       std::array<double, 576> ke{};
