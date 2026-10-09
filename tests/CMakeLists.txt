@@ -4,6 +4,8 @@ add_executable(kika_tests
   gcode/test_roles.cpp
   gcode/test_parser.cpp
   gcode/test_examples.cpp
+  material/test_material.cpp
+  voxel/test_voxel.cpp
 )
 target_link_libraries(kika_tests PRIVATE kika::core Catch2::Catch2WithMain)
 # Тесты читают эталонные G-code из папки прототипа

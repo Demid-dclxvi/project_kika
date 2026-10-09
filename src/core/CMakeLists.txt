@@ -5,7 +5,12 @@ add_library(kika_core
   src/gcode/parser.cpp
   src/gcode/roles.cpp
   src/gcode/toolpaths.cpp
+  src/linalg/dense.cpp
+  src/linalg/sparse.cpp
+  src/material/builtin.cpp
+  src/material/material.cpp
   src/util/text.cpp
+  src/voxel/voxelize.cpp
 )
 add_library(kika::core ALIAS kika_core)
 
