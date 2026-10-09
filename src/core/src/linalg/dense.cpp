@@ -4,6 +4,8 @@
 #include <cmath>
 #include <utility>
 
+#include "util/parallel.hpp"
+
 namespace kika::linalg {
 
 std::optional<Mat6> inverse(const Mat6& m) {
@@ -74,21 +76,40 @@ bool lu_solve_inplace(Dense& a, Dense& b) {
   return true;
 }
 
+namespace {
+
+// Скалярное произведение с четырьмя независимыми суммами (быстрее, результат детерминирован).
+double dot4(const double* x, const double* y, std::size_t n) {
+  double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+  std::size_t k = 0;
+  for (; k + 4 <= n; k += 4) {
+    s0 += x[k] * y[k];
+    s1 += x[k + 1] * y[k + 1];
+    s2 += x[k + 2] * y[k + 2];
+    s3 += x[k + 3] * y[k + 3];
+  }
+  for (; k < n; ++k) s0 += x[k] * y[k];
+  return (s0 + s1) + (s2 + s3);
+}
+
+}  // namespace
+
 bool cholesky_inplace(Dense& a) {
   const std::size_t n = a.rows;
   for (std::size_t j = 0; j < n; ++j) {
     const double* rj = &a.v[j * n];
-    double d = a(j, j);
-    for (std::size_t k = 0; k < j; ++k) d -= rj[k] * rj[k];
+    const double d = a(j, j) - dot4(rj, rj, j);
     if (!(d > 0.0)) return false;
     const double ljj = std::sqrt(d);
     a(j, j) = ljj;
-    for (std::size_t i = j + 1; i < n; ++i) {
-      double* ri = &a.v[i * n];
-      double s = ri[j];
-      for (std::size_t k = 0; k < j; ++k) s -= ri[k] * rj[k];
-      ri[j] = s / ljj;
-    }
+    // строки ниже j независимы — считаем их параллельно, если работы достаточно
+    const std::size_t grain = j < 64 ? n : std::max<std::size_t>(16, 32768 / j);
+    util::parallel_for(j + 1, n, grain, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t i = lo; i < hi; ++i) {
+        double* ri = &a.v[i * n];
+        ri[j] = (ri[j] - dot4(ri, rj, j)) / ljj;
+      }
+    });
   }
   // верхний треугольник обнуляем, чтобы матрица была ровно L
   for (std::size_t i = 0; i < n; ++i)
@@ -99,15 +120,15 @@ bool cholesky_inplace(Dense& a) {
 void cholesky_solve(const Dense& l, std::vector<double>& b) {
   const std::size_t n = l.rows;
   for (std::size_t i = 0; i < n; ++i) {
-    double s = b[i];
     const double* ri = &l.v[i * n];
-    for (std::size_t k = 0; k < i; ++k) s -= ri[k] * b[k];
-    b[i] = s / ri[i];
+    b[i] = (b[i] - dot4(ri, b.data(), i)) / ri[i];
   }
+  // Lᵀ·x = y: идём по строкам L (подряд в памяти), а не по столбцам
   for (std::size_t i = n; i-- > 0;) {
-    double s = b[i];
-    for (std::size_t k = i + 1; k < n; ++k) s -= l(k, i) * b[k];
-    b[i] = s / l(i, i);
+    const double* ri = &l.v[i * n];
+    const double xi = b[i] / ri[i];
+    b[i] = xi;
+    for (std::size_t k = 0; k < i; ++k) b[k] -= ri[k] * xi;
   }
 }
 

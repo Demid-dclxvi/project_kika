@@ -4,14 +4,30 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "util/parallel.hpp"
+
 namespace kika::linalg {
 
+namespace {
+
+// Порог распараллеливания: меньше ~200 тыс. ненулевых — накладные расходы больше выигрыша.
+constexpr std::int64_t kParallelNnz = 200000;
+
+std::size_t row_grain(const CsrMatrix& a) {
+  if (a.nnz() < kParallelNnz) return static_cast<std::size_t>(a.rows) + 1;
+  return 1024;
+}
+
+}  // namespace
+
 void CsrMatrix::multiply(std::span<const double> x, std::span<double> y) const {
-  for (std::int64_t i = 0; i < rows; ++i) {
-    double s = 0.0;
-    for (std::int64_t p = row_ptr[i]; p < row_ptr[i + 1]; ++p) s += val[p] * x[col[p]];
-    y[i] = s;
-  }
+  util::parallel_for(0, static_cast<std::size_t>(rows), row_grain(*this), [&](std::size_t lo, std::size_t hi) {
+    for (auto i = static_cast<std::int64_t>(lo); i < static_cast<std::int64_t>(hi); ++i) {
+      double s = 0.0;
+      for (std::int64_t p = row_ptr[i]; p < row_ptr[i + 1]; ++p) s += val[p] * x[col[p]];
+      y[i] = s;
+    }
+  });
 }
 
 std::vector<double> CsrMatrix::multiply(std::span<const double> x) const {
@@ -80,30 +96,54 @@ CsrMatrix multiply(const CsrMatrix& a, const CsrMatrix& b) {
   c.rows = a.rows;
   c.cols = b.cols;
   c.row_ptr.assign(static_cast<std::size_t>(a.rows) + 1, 0);
-  std::vector<double> acc(static_cast<std::size_t>(b.cols), 0.0);
-  std::vector<std::int64_t> mark(static_cast<std::size_t>(b.cols), -1);
-  std::vector<std::int32_t> touched;
-  for (std::int64_t i = 0; i < a.rows; ++i) {
-    touched.clear();
-    for (std::int64_t p = a.row_ptr[i]; p < a.row_ptr[i + 1]; ++p) {
-      const std::int32_t k = a.col[p];
-      const double av = a.val[p];
-      for (std::int64_t q = b.row_ptr[k]; q < b.row_ptr[k + 1]; ++q) {
-        const std::int32_t j = b.col[q];
-        if (mark[j] != i) {
-          mark[j] = i;
-          acc[j] = 0.0;
-          touched.push_back(j);
+  const auto n = static_cast<std::size_t>(a.rows);
+  // строки делятся на куски; каждый кусок считается независимо в свои буферы,
+  // затем куски склеиваются по порядку — результат не зависит от числа потоков
+  const std::size_t threads = static_cast<std::size_t>(thread_count());
+  const std::size_t n_chunks =
+      (a.nnz() < kParallelNnz / 4 || threads <= 1 || n < 2) ? 1 : std::min(n, threads * 4);
+  const std::size_t step = (n + n_chunks - 1) / std::max<std::size_t>(n_chunks, 1);
+  std::vector<std::vector<std::int32_t>> ccol(n_chunks);
+  std::vector<std::vector<double>> cval(n_chunks);
+  util::run_tasks(n_chunks, [&](std::size_t chunk) {
+    const std::size_t lo = chunk * step;
+    const std::size_t hi = std::min(n, lo + step);
+    std::vector<double> acc(static_cast<std::size_t>(b.cols), 0.0);
+    std::vector<std::int64_t> mark(static_cast<std::size_t>(b.cols), -1);
+    std::vector<std::int32_t> touched;
+    auto& cc = ccol[chunk];
+    auto& cv = cval[chunk];
+    for (auto i = static_cast<std::int64_t>(lo); i < static_cast<std::int64_t>(hi); ++i) {
+      touched.clear();
+      for (std::int64_t p = a.row_ptr[i]; p < a.row_ptr[i + 1]; ++p) {
+        const std::int32_t k = a.col[p];
+        const double av = a.val[p];
+        for (std::int64_t q = b.row_ptr[k]; q < b.row_ptr[k + 1]; ++q) {
+          const std::int32_t j = b.col[q];
+          if (mark[j] != i) {
+            mark[j] = i;
+            acc[j] = 0.0;
+            touched.push_back(j);
+          }
+          acc[j] += av * b.val[q];
         }
-        acc[j] += av * b.val[q];
       }
+      std::sort(touched.begin(), touched.end());
+      for (std::int32_t j : touched) {
+        cc.push_back(j);
+        cv.push_back(acc[j]);
+      }
+      c.row_ptr[i + 1] = static_cast<std::int64_t>(touched.size());
     }
-    std::sort(touched.begin(), touched.end());
-    for (std::int32_t j : touched) {
-      c.col.push_back(j);
-      c.val.push_back(acc[j]);
-    }
-    c.row_ptr[i + 1] = static_cast<std::int64_t>(c.col.size());
+  });
+  for (std::size_t i = 0; i < n; ++i) c.row_ptr[i + 1] += c.row_ptr[i];
+  c.col.reserve(static_cast<std::size_t>(c.row_ptr[n]));
+  c.val.reserve(static_cast<std::size_t>(c.row_ptr[n]));
+  for (std::size_t k = 0; k < n_chunks; ++k) {
+    c.col.insert(c.col.end(), ccol[k].begin(), ccol[k].end());
+    c.val.insert(c.val.end(), cval[k].begin(), cval[k].end());
+    std::vector<std::int32_t>().swap(ccol[k]);
+    std::vector<double>().swap(cval[k]);
   }
   return c;
 }
@@ -181,9 +221,18 @@ CsrMatrix submatrix(const CsrMatrix& a, std::span<const std::int64_t> keep) {
 }
 
 double dot(std::span<const double> x, std::span<const double> y) {
-  double s = 0.0;
-  for (std::size_t i = 0; i < x.size(); ++i) s += x[i] * y[i];
-  return s;
+  // четыре независимые суммы: быстрее одной цепочки, результат детерминирован
+  double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+  const std::size_t n = x.size();
+  std::size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    s0 += x[i] * y[i];
+    s1 += x[i + 1] * y[i + 1];
+    s2 += x[i + 2] * y[i + 2];
+    s3 += x[i + 3] * y[i + 3];
+  }
+  for (; i < n; ++i) s0 += x[i] * y[i];
+  return (s0 + s1) + (s2 + s3);
 }
 
 double norm2(std::span<const double> x) { return std::sqrt(dot(x, x)); }

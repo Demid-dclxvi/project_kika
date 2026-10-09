@@ -1,6 +1,7 @@
 find_package(Catch2 3 CONFIG REQUIRED)
 
 add_executable(kika_tests
+  fem/test_fem.cpp
   gcode/test_roles.cpp
   gcode/test_parser.cpp
   gcode/test_examples.cpp

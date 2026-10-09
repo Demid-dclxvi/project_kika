@@ -5,10 +5,15 @@ add_library(kika_core
   src/gcode/parser.cpp
   src/gcode/roles.cpp
   src/gcode/toolpaths.cpp
+  src/fem/assembly.cpp
+  src/fem/element.cpp
+  src/fem/mesh.cpp
+  src/linalg/amg.cpp
   src/linalg/dense.cpp
   src/linalg/sparse.cpp
   src/material/builtin.cpp
   src/material/material.cpp
+  src/util/parallel.cpp
   src/util/text.cpp
   src/voxel/voxelize.cpp
 )
@@ -24,5 +29,7 @@ target_include_directories(kika_core
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+find_package(Threads REQUIRED)
+target_link_libraries(kika_core PUBLIC Threads::Threads)
 target_compile_features(kika_core PUBLIC cxx_std_20)
 kika_set_compile_options(kika_core)
