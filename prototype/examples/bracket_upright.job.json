@@ -1,0 +1,114 @@
+{
+  "gcode": "bracket_upright.gcode",
+  "title": "Кронштейн для лампы",
+  "subtitle": "Печать стоя на пластине: консоль растёт вверх по Z, при изгибе слои работают на отрыв. Тот же кронштейн и те же нагрузки, что при печати на боку.",
+  "material": "PLA",
+  "target_sf": 2.0,
+  "fixtures": [
+    {
+      "name": "Саморезы",
+      "where": [
+        {
+          "hole": {
+            "axis": "z",
+            "center": [
+              38.0,
+              15.0
+            ],
+            "radius": 2.5
+          }
+        },
+        {
+          "hole": {
+            "axis": "z",
+            "center": [
+              22.0,
+              15.0
+            ],
+            "radius": 2.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "Стена (упор)",
+      "where": {
+        "side": "zmin"
+      },
+      "components": "z"
+    }
+  ],
+  "cases": [
+    {
+      "name": "Лампа 2 кг",
+      "duration": "long",
+      "temperature": 30,
+      "loads": [
+        {
+          "type": "bearing",
+          "where": {
+            "hole": {
+              "axis": "x",
+              "center": [
+                15.0,
+                62.0
+              ],
+              "radius": 4.0
+            }
+          },
+          "vector": [
+            19.62,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Рывок рукой 50 Н вниз",
+      "duration": "short",
+      "loads": [
+        {
+          "type": "force",
+          "where": {
+            "box": {
+              "min": [
+                0,
+                0,
+                60
+              ],
+              "max": [
+                10,
+                30,
+                70
+              ]
+            },
+            "normal": "-x"
+          },
+          "vector": [
+            50,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Боковой толчок 15 Н",
+      "duration": "short",
+      "loads": [
+        {
+          "type": "force",
+          "where": {
+            "side": "zmax"
+          },
+          "vector": [
+            0,
+            15,
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

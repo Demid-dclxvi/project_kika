@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "kika",
+  "version": "0.1.0",
+  "description": "Strength analysis of FDM 3D-printed parts from print toolpaths",
+  "dependencies": [
+    "catch2",
+    "cli11",
+    "nlohmann-json"
+  ]
+}

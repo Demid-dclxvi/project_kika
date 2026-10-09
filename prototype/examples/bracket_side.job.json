@@ -1,0 +1,114 @@
+{
+  "gcode": "bracket_side.gcode",
+  "title": "Кронштейн для лампы",
+  "subtitle": "Печать на боку: профиль кронштейна лежит в плоскости слоя, ширина 30 мм растёт по Z. Крепится двумя саморезами к стене, лампа висит на отверстии на конце консоли.",
+  "material": "PLA",
+  "target_sf": 2.0,
+  "fixtures": [
+    {
+      "name": "Саморезы",
+      "where": [
+        {
+          "hole": {
+            "axis": "x",
+            "center": [
+              12.0,
+              15.0
+            ],
+            "radius": 2.5
+          }
+        },
+        {
+          "hole": {
+            "axis": "x",
+            "center": [
+              28.0,
+              15.0
+            ],
+            "radius": 2.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "Стена (упор)",
+      "where": {
+        "side": "xmin"
+      },
+      "components": "x"
+    }
+  ],
+  "cases": [
+    {
+      "name": "Лампа 2 кг",
+      "duration": "long",
+      "temperature": 30,
+      "loads": [
+        {
+          "type": "bearing",
+          "where": {
+            "hole": {
+              "axis": "y",
+              "center": [
+                62.0,
+                15.0
+              ],
+              "radius": 4.0
+            }
+          },
+          "vector": [
+            0,
+            -19.62,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Рывок рукой 50 Н вниз",
+      "duration": "short",
+      "loads": [
+        {
+          "type": "force",
+          "where": {
+            "box": {
+              "min": [
+                60,
+                40,
+                0
+              ],
+              "max": [
+                70,
+                50,
+                30
+              ]
+            },
+            "normal": "+y"
+          },
+          "vector": [
+            0,
+            -50,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Боковой толчок 15 Н",
+      "duration": "short",
+      "loads": [
+        {
+          "type": "force",
+          "where": {
+            "side": "xmax"
+          },
+          "vector": [
+            0,
+            0,
+            15
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Прочность печати</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='20' width='24' height='5' rx='1.5' fill='%2316181b'/%3E%3Crect x='7' y='13' width='18' height='5' rx='1.5' fill='%2316181b'/%3E%3Crect x='10' y='6' width='12' height='5' rx='1.5' fill='%23eb6834'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/viewer.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="20" width="24" height="5" rx="1.5"/><rect x="7" y="13" width="18" height="5" rx="1.5"/><rect class="hot" x="10" y="6" width="12" height="5" rx="1.5"/></svg>
+    <span>Прочность печати</span>
+  </div>
+  <div class="file" id="fileName" title="">файл не открыт</div>
+  <nav class="top-actions">
+    <label class="btn primary" for="gcodeInput">Открыть G-code</label>
+    <input type="file" id="gcodeInput" accept=".gcode,.gco,.g,.txt,.bgcode" hidden>
+    <button type="button" class="btn" id="btnExample">Пример</button>
+    <button type="button" class="btn" id="btnSaveJob" disabled>Сохранить задание</button>
+    <label class="btn" for="jobInput">Загрузить задание</label>
+    <input type="file" id="jobInput" accept=".json" hidden>
+    <a class="btn" id="btnReport" href="/api/report" aria-disabled="true">Отчёт</a>
+  </nav>
+</header>
+
+<main class="layout">
+  <aside class="panel" id="panel">
+    <section class="step" id="stepModel">
+      <h2><span class="n">1</span>Деталь</h2>
+      <div id="modelInfo" class="muted">Откройте G-code из Orca Slicer, Bambu Studio, PrusaSlicer или Cura. Нарезайте с теми настройками, с которыми будете печатать: стенки, заполнение и ориентация на столе влияют на прочность.</div>
+      <div class="field" id="meshCtl" hidden>
+        <label for="detail">Детальность сетки <span class="hint" id="detailVal"></span></label>
+        <div class="row"><input type="range" id="detail" min="0" max="4" step="1" value="1"><button type="button" class="btn sm" id="btnRebuild">Перестроить</button></div>
+        <div class="hint">Точнее — дольше расчёт. Для первой оценки хватит «обычной».</div>
+      </div>
+    </section>
+
+    <section class="step" id="stepMat">
+      <h2><span class="n">2</span>Материал</h2>
+      <div class="grid2">
+        <div class="field"><label for="matSel">Пластик</label><select id="matSel"></select></div>
+        <div class="field"><label for="targetSf">Нужный запас</label><input type="number" id="targetSf" min="1" max="10" step="0.1" value="2"></div>
+      </div>
+      <div class="hint" id="matNote"></div>
+      <details class="props" id="matProps">
+        <summary>Свойства материала</summary>
+        <div class="tbl-wrap"><table id="propTable"></table></div>
+        <div class="hint">Значения по умолчанию — типовые для хорошей печати. Если испытали свои образцы, впишите свои числа.</div>
+      </details>
+    </section>
+
+    <section class="step" id="stepFix">
+      <h2><span class="n">3</span>Закрепления</h2>
+      <div class="hint">Выберите на модели поверхности, которыми деталь крепится (отверстия под винты, прижатую грань), и нажмите кнопку.</div>
+      <ul class="items" id="fixList"></ul>
+      <button type="button" class="btn add" id="btnAddFix" disabled>+ Закрепить выбранное</button>
+    </section>
+
+    <section class="step" id="stepLoads">
+      <h2><span class="n">4</span>Нагрузки</h2>
+      <div class="hint">Каждый случай считается отдельно: например, «вес лампы» и «случайный удар».</div>
+      <div id="caseList"></div>
+      <button type="button" class="btn add" id="btnAddCase">+ Расчётный случай</button>
+    </section>
+
+    <section class="step run" id="stepRun">
+      <button type="button" class="btn primary big" id="btnRun" disabled>Рассчитать</button>
+      <div class="progress" id="progress" hidden><div class="bar"><i id="progBar"></i></div><div class="ptext" id="progText"></div></div>
+      <div class="hint" id="runHint">Нужны деталь, хотя бы одно закрепление и нагрузка.</div>
+    </section>
+
+    <section class="step" id="stepRes" hidden>
+      <h2>Результаты</h2>
+      <div id="resCards" class="res-cards"></div>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <div class="pick-bar" role="toolbar" aria-label="Выбор поверхностей">
+      <div class="seg" id="tools">
+        <button type="button" data-t="plane" class="on" title="Плоская грань целиком">Грань</button>
+        <button type="button" data-t="hole" title="Стенка отверстия или цилиндра">Отверстие</button>
+        <button type="button" data-t="brush" title="Всё в радиусе от точки">Кисть</button>
+      </div>
+      <label class="ctl" id="brushCtl" hidden>радиус <input type="range" id="brushR" min="1" max="30" value="4"><span class="num" id="brushRVal">4 мм</span></label>
+      <span class="sel-info" id="selInfo">Щелчок — выбрать, Shift — добавить, Alt — убрать</span>
+      <button type="button" class="btn sm" id="btnClearSel" disabled>Снять выбор</button>
+    </div>
+    <div class="viewer" id="viewer">
+      <div class="empty" id="emptyState">
+        <div class="drop">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 34h32M12 28h24M16 22h16" stroke-width="3" stroke-linecap="round" fill="none"/><path d="M24 6v10m0 0-4-4m4 4 4-4" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          <b>Перетащите сюда файл G-code</b>
+          <span>или откройте пример — настенный кронштейн для лампы, напечатанный на боку</span>
+          <button type="button" class="btn primary" id="btnExample2">Открыть пример</button>
+        </div>
+      </div>
+      <div class="dropzone" id="dropzone" hidden>Отпустите файл, чтобы загрузить</div>
+      <div class="legend" id="legend" hidden></div>
+      <div class="axes-note"><i class="ax-x">X</i> <i class="ax-y">Y</i> <i class="ax-z">Z</i> — оси принтера, мм от угла детали<br>вращение — мышь, сдвиг — правая кнопка, масштаб — колесо</div>
+    </div>
+    <div class="view-bar">
+      <div class="seg" id="fields" role="group" aria-label="Что показать"></div>
+      <label class="ctl" id="deformCtl" hidden><input type="checkbox" id="deformOn"> деформация ×<span class="num" id="deformVal">—</span><input type="range" id="deform" min="0" max="100" value="50"></label>
+      <label class="ctl">разрез
+        <select id="secAxis"><option value="">нет</option><option value="0">X</option><option value="1">Y</option><option value="2">Z</option></select>
+        <input type="range" id="secPos" min="0" max="1000" value="500" disabled></label>
+      <button type="button" class="btn sm" id="btnWeak" hidden title="Разрез по слою через слабое место">Слабое место</button>
+      <span class="views"><button type="button" class="btn sm" data-v="iso">Изо</button><button type="button" class="btn sm" data-v="front">Спереди</button><button type="button" class="btn sm" data-v="top">Сверху</button><button type="button" class="btn sm" data-v="right">Справа</button></span>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/static/vendor/three.min.js"></script>
+<script src="/static/viewer.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

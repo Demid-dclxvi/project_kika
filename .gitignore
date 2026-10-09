@@ -1,0 +1,18 @@
+# Сборка
+build/
+out/
+.vcpkg-cache/
+vcpkg_installed/
+CMakeUserPresets.json
+
+# Редакторы
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

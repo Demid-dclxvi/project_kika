@@ -1,0 +1,6 @@
+* text=auto
+# G-code — эталонные данные тестов: байты не меняем, большие диффы не показываем
+*.gcode -text -diff
+*.min.js -diff
+*.bat text eol=crlf
+*.sh text eol=lf
