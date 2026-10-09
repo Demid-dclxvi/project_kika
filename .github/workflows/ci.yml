@@ -58,6 +58,22 @@ jobs:
       - name: Тесты
         run: ctest --preset ${{ matrix.preset }}
 
+      - name: kika.exe запускается на чистой Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $exe = "build/${{ matrix.preset }}/bin/kika.exe"
+          $deps = (dumpbin /nologo /dependents $exe | Out-String)
+          Write-Output $deps
+          if ($deps -match '(?i)msvcp|vcruntime|ucrtbase|api-ms-win-crt') {
+            throw 'kika.exe требует среду выполнения Visual C++ — на чистой Windows не запустится'
+          }
+          & $exe --version;  if ($LASTEXITCODE -ne 0) { throw 'kika --version' }
+          & $exe;            if ($LASTEXITCODE -ne 0) { throw 'kika без аргументов' }
+          & $exe prototype/examples/bracket_side.gcode
+          if ($LASTEXITCODE -ne 0) { throw 'kika <файл>' }
+
       - name: Python для сверки с прототипом
         if: runner.os == 'Linux'
         uses: actions/setup-python@v7

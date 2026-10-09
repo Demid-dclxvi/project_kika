@@ -168,6 +168,53 @@ int cmd_segments(const std::string& file_arg, const std::string& out_arg) {
   return 0;
 }
 
+// Окно консоли открыто только ради kika: запуск двойным щелчком или перетаскиванием
+// файла на kika.exe. Тогда перед выходом ждём Enter, иначе окно закроется раньше,
+// чем текст успеют прочитать. При запуске из командной строки и в CI не ждём.
+bool own_console_window() {
+#ifdef _WIN32
+  DWORD ids[2];
+  if (GetConsoleProcessList(ids, 2) != 1) return false;
+  return GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_CHAR &&
+         GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR;
+#else
+  return false;
+#endif
+}
+
+int finish(int code) {
+  if (own_console_window()) {
+    std::cout << "\nНажмите Enter, чтобы закрыть окно…" << std::flush;
+    std::string line;
+    std::getline(std::cin, line);
+  }
+  return code;
+}
+
+void print_usage() {
+  std::cout << "kika " << kika::kVersion << " — расчёт прочности деталей для FDM-печати\n\n"
+            << "Перетащите файл G-code на kika.exe — программа покажет, что в нём найдено:\n"
+            << "слайсер, пластик, слои, объём по типам линий.\n\n"
+            << "Из командной строки:\n"
+            << "  kika деталь.gcode                         то же, что перетаскивание\n"
+            << "  kika info деталь.gcode                    сведения о печати\n"
+            << "  kika info деталь.gcode --json             то же в JSON\n"
+            << "  kika segments деталь.gcode -o отрезки.csv все отрезки экструзии в CSV\n"
+            << "  kika --help                               справка по всем командам\n";
+}
+
+// «kika файл.gcode [файл2.gcode …]» — файлы, перетащенные на kika.exe.
+bool all_existing_files(int argc, char** argv) {
+  if (argc < 2) return false;
+  for (int k = 1; k < argc; ++k) {
+    const std::string a = argv[k];
+    if (a.empty() || a.front() == '-' || a == "info" || a == "segments") return false;
+    std::error_code ec;
+    if (!fs::is_regular_file(path_from_utf8(a), ec)) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -176,6 +223,25 @@ int main(int argc, char** argv) {
 #endif
   CLI::App app{"kika — расчёт прочности деталей для FDM-печати по траекториям печати"};
   argv = app.ensure_utf8(argv);
+
+  if (argc == 1) {
+    print_usage();
+    return finish(0);
+  }
+  if (all_existing_files(argc, argv)) {
+    int code = 0;
+    for (int k = 1; k < argc; ++k) {
+      if (k > 1) std::cout << "\n";
+      try {
+        cmd_info(argv[k], false);
+      } catch (const std::exception& e) {
+        std::cerr << "Ошибка: " << e.what() << "\n";
+        code = 1;
+      }
+    }
+    return finish(code);
+  }
+
   app.set_version_flag("--version", std::string(kika::kVersion));
   app.require_subcommand(1);
 
@@ -190,14 +256,18 @@ int main(int argc, char** argv) {
   segs->add_option("gcode", gcode_file, "Файл G-code")->required();
   segs->add_option("-o,--out", out_file, "Куда записать CSV (по умолчанию — на экран)");
 
-  CLI11_PARSE(app, argc, argv);
+  try {
+    app.parse(argc, argv);
+  } catch (const CLI::ParseError& e) {
+    return finish(app.exit(e));
+  }
 
   try {
-    if (*info) return cmd_info(gcode_file, as_json);
-    if (*segs) return cmd_segments(gcode_file, out_file);
+    if (*info) return finish(cmd_info(gcode_file, as_json));
+    if (*segs) return finish(cmd_segments(gcode_file, out_file));
   } catch (const std::exception& e) {
     std::cerr << "Ошибка: " << e.what() << "\n";
-    return 1;
+    return finish(1);
   }
-  return 0;
+  return finish(0);
 }
