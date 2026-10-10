@@ -41,11 +41,14 @@
       "name": "windows-gui-base",
       "hidden": true,
       "inherits": "windows-base",
-      "description": "С окном kika-gui. Qt подключается библиотеками DLL, поэтому среда выполнения C++ тоже DLL (/MD). Папка Qt — в переменной окружения QT_ROOT_DIR.",
+      "description": "С окном kika-gui и чтением STEP. Qt и OpenCascade подключаются библиотеками DLL, поэтому среда выполнения C++ тоже DLL (/MD). Папка Qt — в переменной окружения QT_ROOT_DIR; OpenCascade собирает vcpkg (первый раз — долго).",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets",
+        "VCPKG_MANIFEST_FEATURES": "step",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
         "KIKA_BUILD_GUI": "ON",
+        "KIKA_WITH_OCCT": "ON",
         "KIKA_BUILD_TESTS": "OFF"
       }
     },
@@ -90,7 +93,7 @@
     },
     {
       "name": "ci-windows-gui",
-      "displayName": "CI: Windows x64 с окном, Release, тесты, предупреждения = ошибки",
+      "displayName": "CI: Windows x64 с окном и STEP, Release, тесты, предупреждения = ошибки",
       "inherits": "win-gui-release",
       "cacheVariables": { "KIKA_WERROR": "ON", "KIKA_BUILD_TESTS": "ON" }
     },

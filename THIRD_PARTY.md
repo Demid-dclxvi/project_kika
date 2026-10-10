@@ -11,10 +11,15 @@
 | [Clipper2](https://github.com/AngusJohnson/Clipper2) | 2.0.1 (по baseline vcpkg) | BSL-1.0 | контуры слоёв в своём слайсере (`src/slicer`): объединение, смещение, пересечение | статически, через vcpkg |
 | [three.js](https://threejs.org) | r149 | MIT | 3D-просмотр в HTML-отчёте | файл `src/report/web/vendor/three.min.js` встраивается в программу и в каждый отчёт; уведомление об авторских правах — в начале файла, текст лицензии — `three.LICENSE.txt` рядом |
 | [Qt](https://www.qt.io) — модули Core, Gui, Widgets, OpenGL, OpenGLWidgets | 6.8 (Windows), от 6.4 (Linux) | LGPL-3.0 | окно `kika-gui` | динамически: библиотеки Qt6*.dll лежат рядом с программой отдельными файлами; модули под GPL и коммерческие не используются |
+| [OpenCascade](https://github.com/Open-Cascade-SAS/OCCT) (OCCT) | 8.0.1 (по baseline vcpkg) | LGPL-2.1 с исключением OCCT | чтение STEP в сборке с окном (`src/geometry/src/step.cpp`): STEP → тела → треугольная сетка | динамически, через vcpkg (свой триплет `cmake/triplets`): библиотеки TK*.dll лежат рядом с программой отдельными файлами; `kika.exe` из обычной сборки — без OpenCascade и без STEP |
 | Mesa llvmpipe (`opengl32sw.dll` из поставки Qt) | из поставки Qt | MIT | программный OpenGL для окна на Windows без драйвера видеокарты | отдельная DLL, загружается Qt при необходимости |
 | Среда выполнения Visual C++ (`msvcp140*.dll`, `vcruntime140*.dll`) | из Visual Studio 2022 | лицензия Visual Studio (распространяемые файлы) | только папка с окном на Windows | DLL рядом с программой; `kika.exe` из обычной сборки — без неё |
 
-Версии zlib, Clipper2 и Catch2 фиксирует `vcpkg-configuration.json` (baseline реестра vcpkg).
+Версии zlib, Clipper2, OpenCascade и Catch2 фиксирует `vcpkg-configuration.json` (baseline реестра vcpkg).
+
+### OpenCascade и LGPL-2.1
+
+OpenCascade подключается так же, как Qt: только динамически. Триплет vcpkg `x64-windows-static-md` переопределён в `cmake/triplets`: все библиотеки статически, а OpenCascade — DLL (и только Release). CMake проверяет, что найдена динамическая сборка, иначе останавливается. В папке программы — `licenses/OpenCASCADE-LGPL-2.1-exception.txt` (текст LGPL-2.1 и исключения OCCT). OpenCascade не изменялся; исходники — [github.com/Open-Cascade-SAS/OCCT](https://github.com/Open-Cascade-SAS/OCCT), тег `V8_0_1`. Используются модули чтения STEP и построения сетки; визуализация OpenCascade собирается vcpkg, но программой не вызывается.
 
 ### Qt и LGPL-3.0
 
@@ -31,7 +36,7 @@ Qt подключается не через vcpkg: LGPL требует дина�
 | --- | --- | --- |
 | Manifold | Apache-2.0 | булевы операции над сетками |
 | fTetWild | MPL-2.0 | тетраэдрическая сетка |
-| OpenCascade | LGPL-2.1 с исключением | STEP, твердотельная геометрия; динамически |
+| OpenCascade (дальше) | LGPL-2.1 с исключением | твердотельная геометрия для тетраэдрической сетки; динамически |
 
 ## Не используем
 
