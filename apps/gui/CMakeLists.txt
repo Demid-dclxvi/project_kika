@@ -15,7 +15,7 @@ if(NOT Qt6_FOUND)
 endif()
 
 add_executable(kika-gui WIN32 main.cpp main_window.cpp viewer.cpp)
-target_link_libraries(kika-gui PRIVATE kika::app kika::report Qt6::Widgets Qt6::OpenGLWidgets)
+target_link_libraries(kika-gui PRIVATE kika::app kika::report kika::geometry kika::slicer Qt6::Widgets Qt6::OpenGLWidgets)
 # пример (кронштейн) ищется рядом с программой, а при запуске из папки сборки — в prototype/examples
 target_compile_definitions(kika-gui PRIVATE KIKA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 kika_set_compile_options(kika-gui)
