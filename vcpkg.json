@@ -5,6 +5,7 @@
   "description": "Strength analysis of FDM 3D-printed parts from print toolpaths",
   "dependencies": [
     "catch2",
+    "clipper2",
     "zlib"
   ]
 }

@@ -386,6 +386,11 @@ Job parse_job(const json::Value& v) {
   if (const Value* t = get_set(v, "target_sf")) job.target_sf = num(*t, "target_sf");
   if (const Value* c = get(v, "coords")) job.part_coords = c->is_string() && c->as_string() == "part";
   if (const Value* g = get_set(v, "gcode")) job.gcode = str_of(*g, "gcode");
+  if (const Value* g = get_set(v, "model")) job.model = str_of(*g, "model");
+  if (const Value* pr = get_set(v, "print")) {
+    if (!pr->is_object()) throw JobError("print: ожидается объект {…} с настройками нарезки");
+    job.print = *pr;
+  }
   if (const Value* t = get_set(v, "title")) job.title = str_of(*t, "title");
   if (const Value* t = get_set(v, "subtitle")) job.subtitle = str_of(*t, "subtitle");
   if (const Value* x = get_set(v, "voxel"); x && x->truthy()) job.voxel = num(*x, "voxel");

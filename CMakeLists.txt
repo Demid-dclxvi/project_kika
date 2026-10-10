@@ -23,6 +23,8 @@ include(cmake/CompilerOptions.cmake)
 
 add_subdirectory(src/core)
 add_subdirectory(src/report)
+add_subdirectory(src/geometry)
+add_subdirectory(src/slicer)
 add_subdirectory(src/app)
 add_subdirectory(apps/cli)
 if(KIKA_BUILD_GUI)

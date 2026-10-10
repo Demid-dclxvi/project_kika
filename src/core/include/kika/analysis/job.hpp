@@ -62,6 +62,8 @@ struct Job {
   std::vector<Case> cases;
   // для командной строки
   std::optional<std::string> gcode;
+  std::optional<std::string> model;   // модель (STL, 3MF, STEP) — нарезается своим слайсером
+  std::optional<json::Value> print;   // настройки нарезки модели (поле "print")
   std::optional<std::string> title;
   std::optional<std::string> subtitle;
   std::optional<double> voxel;

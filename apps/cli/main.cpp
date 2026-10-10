@@ -3,6 +3,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -19,9 +20,11 @@
 
 #include "kika/analysis/analysis.hpp"
 #include "kika/gcode/parser.hpp"
+#include "kika/geometry/import.hpp"
 #include "kika/material/material.hpp"
 #include "kika/parallel.hpp"
 #include "kika/report/report.hpp"
+#include "kika/slicer/print_job.hpp"
 #include "kika/util/json.hpp"
 #include "kika/version.hpp"
 
@@ -260,8 +263,43 @@ void print_info_text(const fs::path& file, const kika::gcode::Toolpaths& tp, dou
   for (const auto& w : i.warnings) std::cout << "Внимание: " << w << "\n";
 }
 
+// Сведения о модели (STL, 3MF, STEP).
+int cmd_model_info(const fs::path& file, bool as_json) {
+  const auto im = kika::geometry::load_model(file);
+  const auto box = im.mesh.bbox();
+  const auto sz = box.size();
+  const auto c = kika::geometry::check(im.mesh);
+  if (as_json) {
+    Value j = Value::object();
+    j["file"] = utf8_from_path(file.filename());
+    j["format"] = im.format;
+    j["name"] = im.name;
+    j["objects"] = im.objects;
+    j["triangles"] = im.mesh.triangles.size();
+    j["vertices"] = im.mesh.vertices.size();
+    j["size"] = Value::array_of(sz);
+    j["volume_mm3"] = im.mesh.volume();
+    j["area_mm2"] = im.mesh.area();
+    j["closed"] = c.closed();
+    j["shells"] = c.shells;
+    j["warnings"] = Value::array_of(im.warnings);
+    std::cout << kika::json::dump(j, 2) << "\n";
+    return 0;
+  }
+  std::cout << "Файл:          " << utf8_from_path(file.filename()) << "\n";
+  std::cout << "Модель:        " << im.format << ", «" << im.name << "», объектов " << im.objects << "\n";
+  std::cout << "Треугольников: " << im.mesh.triangles.size() << ", вершин " << im.mesh.vertices.size() << "\n";
+  std::cout << "Габарит:       " << num(sz[0], 2) << " × " << num(sz[1], 2) << " × " << num(sz[2], 2) << " мм\n";
+  std::cout << "Объём:         " << num(im.mesh.volume() / 1000, 3) << " см³, поверхность " << num(im.mesh.area() / 100, 2)
+            << " см²\n";
+  std::cout << "Поверхность:   " << (c.closed() ? "замкнута" : "НЕ замкнута") << ", тел " << c.shells << "\n";
+  for (const auto& w : im.warnings) std::cout << "Внимание: " << w << "\n";
+  return 0;
+}
+
 int cmd_info(const std::string& file_arg, bool as_json) {
   const fs::path file = path_from_utf8(file_arg);
+  if (kika::geometry::is_model_file(file)) return cmd_model_info(file, as_json);
   const auto t0 = std::chrono::steady_clock::now();
   const auto tp = kika::gcode::load(file);
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -269,6 +307,63 @@ int cmd_info(const std::string& file_arg, bool as_json) {
     std::cout << kika::json::dump(info_json(file, tp, seconds), 2) << "\n";
   else
     print_info_text(file, tp, seconds);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// kika slice
+
+std::string slice_model(const fs::path& model_path, const Value* print, const std::string& material,
+                        const std::optional<std::string>& gcode_out, bool quiet);
+
+const std::vector<Option> kSliceOptions = {
+    {{"-o", "--out"}, true},  {{"--printer"}, true},     {{"--filament"}, true},     {{"--layer"}, true},
+    {{"--first-layer"}, true}, {{"--line-width"}, true}, {{"--walls"}, true},        {{"--top"}, true},
+    {{"--bottom"}, true},     {{"--infill"}, true},      {{"--pattern"}, true},      {{"--angle"}, true},
+    {{"--rotate"}, true},     {{"--no-skirt"}, false},   {{"-q", "--quiet"}, false}};
+
+// Поле "print" задания из параметров командной строки.
+Value print_from_args(const Args& a) {
+  Value pr = Value::object();
+  auto num_opt = [&](const char* opt, const char* key) {
+    if (auto v = a.value(opt)) pr[key] = parse_number(*v, opt);
+  };
+  if (auto v = a.value("--printer")) pr["printer"] = *v;
+  if (auto v = a.value("--filament")) pr["filament"] = *v;
+  num_opt("--layer", "layer_height");
+  num_opt("--first-layer", "first_layer_height");
+  num_opt("--line-width", "line_width");
+  num_opt("--walls", "walls");
+  num_opt("--top", "top_layers");
+  num_opt("--bottom", "bottom_layers");
+  num_opt("--infill", "infill");
+  num_opt("--angle", "infill_angle");
+  if (auto v = a.value("--pattern")) pr["pattern"] = *v;
+  if (auto v = a.value("--rotate")) {
+    Value r = Value::array();
+    std::stringstream ss(*v);
+    std::string part;
+    while (std::getline(ss, part, ',')) r.push_back(parse_number(part, "--rotate"));
+    if (r.size() != 3) throw UsageError("--rotate: нужно три угла через запятую, например 90,0,0");
+    pr["rotate"] = r;
+  }
+  if (a.flag("--no-skirt")) pr["skirt"] = false;
+  return pr;
+}
+
+fs::path default_gcode_path(const fs::path& model) {
+  fs::path out = model;
+  out.replace_filename(path_from_utf8(utf8_from_path(model.stem()) + "_kika.gcode"));
+  return out;
+}
+
+int cmd_slice(const std::string& model_arg, const Args& a) {
+  const fs::path model = path_from_utf8(model_arg);
+  if (!kika::geometry::is_model_file(model)) throw UsageError("kika slice режет модели STL, 3MF, STEP");
+  const Value pr = print_from_args(a);
+  const std::string out = a.value("--out").value_or(utf8_from_path(default_gcode_path(model)));
+  std::cout << "Модель: " << utf8_from_path(model) << std::endl;
+  slice_model(model, &pr, "PETG", out, a.flag("--quiet"));
   return 0;
 }
 
@@ -334,6 +429,7 @@ struct RunOptions {
   std::optional<long long> max_elems;
   std::optional<double> tol;
   std::optional<std::string> report_out;  // пусто — рядом с заданием
+  std::optional<std::string> gcode_out;   // сохранить G-code своей нарезки
   bool no_report = false;
   bool open_report = false;  // открыть отчёт в браузере
   bool quiet = false;
@@ -382,6 +478,43 @@ void dump_arrays(const fs::path& dir, const kika::analysis::Model& model,
   }
 }
 
+// Модель → своя нарезка → текст G-code (и файл, если просили).
+std::string slice_model(const fs::path& model_path, const Value* print, const std::string& material,
+                        const std::optional<std::string>& gcode_out, bool quiet) {
+  auto im = kika::geometry::load_model(model_path);
+  const auto sz = im.mesh.bbox().size();
+  std::cout << std::format("  {}: {} треугольников, габарит {} × {} × {} мм, объём {} см³\n", im.format,
+                           im.mesh.triangles.size(), num(sz[0], 1), num(sz[1], 1), num(sz[2], 1),
+                           num(im.mesh.volume() / 1000, 2));
+  for (const auto& w : im.warnings) std::cout << "  ⚠ " << w << "\n";
+  const auto pj = kika::slicer::print_from_json(print, material);
+  const auto& s = pj.settings;
+  std::cout << std::format("  нарезка: {}, {}, слой {} мм, стенок {}, заполнение {}% {}\n", s.printer.name, s.filament.type,
+                           num(s.layer_height, 2), s.wall_loops, num(s.infill_density * 100, 0),
+                           kika::slicer::pattern_key(s.pattern))
+            << std::flush;
+  kika::slicer::Progress prog;
+  if (!quiet) {
+    auto last = std::make_shared<std::string>();
+    prog = [last](double frac, std::string_view text) {
+      if (text != *last) {
+        std::cout << std::format("  [{:5.1f}%] {}", frac * 100, text) << std::endl;
+        *last = std::string(text);
+      }
+    };
+  }
+  const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, pj), s, prog, im.name);
+  for (const auto& w : r.warnings) std::cout << "  ⚠ " << w << "\n";
+  std::cout << std::format("  слоёв {}, пруток {} м ({} г), печать примерно {} ч {} мин\n", r.layers,
+                           num(r.filament_mm / 1000, 2), num(r.filament_g, 0), static_cast<int>(r.print_time_s / 3600),
+                           static_cast<int>(std::fmod(r.print_time_s, 3600) / 60));
+  if (gcode_out) {
+    write_file(path_from_utf8(*gcode_out), r.gcode);
+    std::cout << "  G-code: " << *gcode_out << "\n";
+  }
+  return r.gcode;
+}
+
 int cmd_run(const RunOptions& o) {
   const auto t0 = std::chrono::steady_clock::now();
   const fs::path job_path = path_from_utf8(o.job);
@@ -393,8 +526,9 @@ int cmd_run(const RunOptions& o) {
   }
   auto job = kika::analysis::parse_job(job_json);
   if (o.tol) job.solver_tol = *o.tol;
-  std::optional<std::string> g = o.gcode ? o.gcode : job.gcode;
-  if (!g) throw UsageError("Укажите файл G-code (в командной строке или полем \"gcode\" в задании).");
+  // источник: G-code или модель, которую режет свой слайсер
+  std::optional<std::string> g = o.gcode ? o.gcode : (job.gcode ? job.gcode : job.model);
+  if (!g) throw UsageError("Укажите файл G-code или модель (в командной строке или полем \"gcode\" / \"model\" в задании).");
   fs::path gpath = path_from_utf8(*g);
   std::error_code ec;
   if (!gpath.is_absolute() && !fs::exists(gpath, ec)) {
@@ -405,8 +539,15 @@ int cmd_run(const RunOptions& o) {
   mo.voxel = o.voxel ? o.voxel : job.voxel;
   mo.max_elems = static_cast<int>(o.max_elems ? *o.max_elems : (job.max_elems ? *job.max_elems : 150000));
 
-  std::cout << "G-code: " << utf8_from_path(gpath) << std::endl;
-  auto tp = kika::gcode::load(gpath);
+  kika::gcode::Toolpaths tp;
+  if (kika::geometry::is_model_file(gpath)) {
+    std::cout << "Модель: " << utf8_from_path(gpath) << std::endl;
+    tp = kika::gcode::parse(slice_model(gpath, job.print ? &*job.print : nullptr,
+                                        job.material ? job.material->key : std::string("PLA"), o.gcode_out, o.quiet));
+  } else {
+    std::cout << "G-code: " << utf8_from_path(gpath) << std::endl;
+    tp = kika::gcode::load(gpath);
+  }
   const auto model = kika::analysis::build_model(std::move(tp), mo, progress_printer(o.quiet));
   const auto sm = kika::analysis::model_summary(model);
   const std::string ft = sm.find("filament_type")->as_string();
@@ -478,11 +619,24 @@ void print_usage() {
             << "Из командной строки:\n"
             << "  kika деталь.gcode                         то же, что перетаскивание\n"
             << "  kika info деталь.gcode [--json]           сведения о печати\n"
-            << "  kika run [деталь.gcode] задание.json      расчёт прочности\n"
+            << "  kika деталь.stl                           нарезать модель (STL, 3MF, STEP) с настройками\n"
+            << "                                            по умолчанию, G-code — рядом: деталь_kika.gcode\n"
+            << "  kika info деталь.stl                      сведения о модели: габарит, объём, замкнутость\n"
+            << "  kika slice деталь.stl [-o деталь.gcode]   нарезать своим слайсером\n"
+            << "      --printer sparkx_i7 | generic_220     принтер\n"
+            << "      --filament PETG                       пластик (температуры, обдув)\n"
+            << "      --layer 0.2 --first-layer 0.2         высота слоя и первого слоя, мм\n"
+            << "      --walls 2 --top 5 --bottom 3          стенки, сплошные слои сверху и снизу\n"
+            << "      --infill 15 --pattern grid            заполнение, %; рисунок: grid, rectilinear,\n"
+            << "                                            triangles, line\n"
+            << "      --rotate 90,0,0                       повернуть деталь (градусы вокруг X, Y, Z)\n"
+            << "  kika run [деталь.gcode] задание.json      расчёт прочности (вместо G-code — модель:\n"
+            << "                                            поля \"model\" и \"print\" в задании)\n"
             << "      -o отчёт.html                         куда записать отчёт с 3D-видом\n"
             << "                                            (по умолчанию — рядом с заданием)\n"
             << "      --open                                открыть отчёт в браузере\n"
             << "      --no-report                           без отчёта\n"
+            << "      --gcode-out деталь.gcode              сохранить G-code нарезки модели\n"
             << "      --json итоги.json                     записать итоги в JSON\n"
             << "      --voxel 0.5                           размер вокселя, мм\n"
             << "      --max-elems 150000                    предел числа элементов\n"
@@ -534,6 +688,13 @@ std::optional<int> run_dropped_files(const std::vector<std::string>& args) {
   for (std::size_t k = 0; k < gcodes.size(); ++k) {
     if (k) std::cout << "\n";
     try {
+      const fs::path f = path_from_utf8(gcodes[k]);
+      if (kika::geometry::is_model_file(f)) {
+        // модель — нарезать с настройками по умолчанию, G-code рядом
+        std::cout << "Модель: " << utf8_from_path(f) << std::endl;
+        slice_model(f, nullptr, "PETG", utf8_from_path(default_gcode_path(f)), false);
+        continue;
+      }
       cmd_info(gcodes[k], false);
     } catch (const std::exception& e) {
       std::cerr << "Ошибка: " << e.what() << "\n";
@@ -557,19 +718,24 @@ int run_main(const std::vector<std::string>& args) {
     print_usage();
     return finish(0);
   }
-  if (cmd != "info" && cmd != "segments" && cmd != "run" && cmd != "materials")
+  if (cmd != "info" && cmd != "segments" && cmd != "run" && cmd != "materials" && cmd != "slice")
     if (auto code = run_dropped_files(args)) return finish(*code);
 
   try {
     if (cmd == "info") {
       const auto a = parse_args(args, 2, {{{"--json"}, false}});
-      if (a.positional.size() != 1) throw UsageError("укажите один файл G-code: kika info деталь.gcode");
+      if (a.positional.size() != 1) throw UsageError("укажите один файл: kika info деталь.gcode (или модель .stl/.3mf)");
       return finish(cmd_info(a.positional[0], a.flag("--json")));
     }
     if (cmd == "segments") {
       const auto a = parse_args(args, 2, {{{"-o", "--out"}, true}});
       if (a.positional.size() != 1) throw UsageError("укажите один файл G-code: kika segments деталь.gcode");
       return finish(cmd_segments(a.positional[0], a.value("--out")));
+    }
+    if (cmd == "slice") {
+      const auto a = parse_args(args, 2, kSliceOptions);
+      if (a.positional.size() != 1) throw UsageError("укажите одну модель: kika slice деталь.stl");
+      return finish(cmd_slice(a.positional[0], a));
     }
     if (cmd == "materials") {
       parse_args(args, 2, {});
@@ -584,6 +750,7 @@ int run_main(const std::vector<std::string>& args) {
                                  {{"--threads"}, true},
                                  {{"--tol"}, true},
                                  {{"-o", "--report"}, true},
+                                 {{"--gcode-out"}, true},
                                  {{"--no-report"}, false},
                                  {{"--open"}, false},
                                  {{"-q", "--quiet"}, false}});
@@ -604,6 +771,7 @@ int run_main(const std::vector<std::string>& args) {
       if (auto v = a.value("--threads")) kika::set_thread_count(static_cast<int>(parse_number(*v, "--threads")));
       o.quiet = a.flag("--quiet");
       o.report_out = a.value("--report");
+      o.gcode_out = a.value("--gcode-out");
       o.no_report = a.flag("--no-report");
       o.open_report = a.flag("--open");
       return finish(cmd_run(o));

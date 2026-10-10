@@ -1,4 +1,5 @@
 find_package(Catch2 3 CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 
 add_executable(kika_tests
   analysis/test_analysis.cpp
@@ -6,15 +7,17 @@ add_executable(kika_tests
   app/test_roads.cpp
   analysis/test_job.cpp
   fem/test_fem.cpp
+  geometry/test_import.cpp
   gcode/test_roles.cpp
   gcode/test_parser.cpp
   gcode/test_examples.cpp
   material/test_material.cpp
   report/test_report.cpp
+  slicer/test_slicer.cpp
   util/test_json.cpp
   voxel/test_voxel.cpp
 )
-target_link_libraries(kika_tests PRIVATE kika::core kika::report kika::app Catch2::Catch2WithMain)
+target_link_libraries(kika_tests PRIVATE kika::core kika::report kika::app kika::geometry kika::slicer ZLIB::ZLIB Catch2::Catch2WithMain)
 # Тесты читают эталонные G-code из папки прототипа
 target_compile_definitions(kika_tests PRIVATE KIKA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 kika_set_compile_options(kika_tests)
