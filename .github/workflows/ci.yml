@@ -50,11 +50,14 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      # Кэш сохраняется сразу после настройки, даже если дальше что-то упадёт: OpenCascade для
+      # сборки с окном собирается долго, и пересобирать его из-за ошибки в нашем коде незачем.
       - name: Кэш библиотек vcpkg
-        uses: actions/cache@v6
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*.cmake') }}
           restore-keys: vcpkg-${{ matrix.preset }}-
 
       - name: Настройка vcpkg
@@ -67,11 +70,17 @@ jobs:
       - name: Конфигурация
         run: cmake --preset ${{ matrix.preset }}
 
+      - name: Сохранить кэш библиотек vcpkg
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+
       - name: Сборка
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Тесты
-        if: matrix.preset != 'ci-windows-gui'
         run: ctest --preset ${{ matrix.preset }}
 
       - name: kika.exe запускается на чистой Windows
@@ -126,20 +135,28 @@ jobs:
         if: matrix.preset == 'ci-windows-gui'
         shell: pwsh
         run: |
+          # логи CI не всегда доступны — причину ошибки пишем в аннотацию к сборке
+          trap { Write-Output "::error title=Сборка окна в папку::$($_.InvocationInfo.ScriptLineNumber): $_"; break }
           $out = 'kika-windows-x64'
           New-Item -ItemType Directory -Force $out, "$out/examples", "$out/licenses" | Out-Null
           Copy-Item build/${{ matrix.preset }}/bin/kika-gui.exe, build/${{ matrix.preset }}/bin/kika.exe $out
+          # OpenCascade (STEP): TK*.dll, которые vcpkg положил рядом с программой при сборке
+          Get-ChildItem build/${{ matrix.preset }}/bin -Filter *.dll | Copy-Item -Destination $out
           # библиотеки Qt, модули платформы и программный OpenGL (opengl32sw.dll); русские подписи диалогов
           windeployqt --release --no-compiler-runtime --no-system-d3d-compiler --translations ru "$out/kika-gui.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'windeployqt' }
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt: код выхода $LASTEXITCODE" }
           # среда выполнения Visual C++ рядом с программой — устанавливать её не нужно
           $crt = Get-ChildItem "$env:VCToolsRedistDir/x64" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+          if (-not $crt) { throw "нет среды выполнения Visual C++ в $env:VCToolsRedistDir" }
           Copy-Item "$($crt.FullName)/*.dll" $out
-          Copy-Item prototype/examples/*.gcode, prototype/examples/*.job.json, examples/* "$out/examples"
-          Copy-Item packaging/windows/* $out
+          Get-ChildItem prototype/examples -File | Where-Object { $_.Name -match '\.(gcode|job\.json)$' } | Copy-Item -Destination "$out/examples"
+          Get-ChildItem examples -File | Copy-Item -Destination "$out/examples"
+          Get-ChildItem packaging/windows -File | Copy-Item -Destination $out
+          # лицензии: LGPL-3.0 и GPL-3.0 (Qt), реестр сторонних библиотек, OpenCascade
+          Get-ChildItem packaging/licenses -File | Copy-Item -Destination "$out/licenses"
           Copy-Item THIRD_PARTY.md "$out/licenses"
-          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile "$out/licenses/LGPL-3.0.txt" -MaximumRetryCount 3 -RetryIntervalSec 10
-          Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile "$out/licenses/GPL-3.0.txt" -MaximumRetryCount 3 -RetryIntervalSec 10
+          $occt = "build/${{ matrix.preset }}/vcpkg_installed/x64-windows-static-md/share/opencascade/copyright"
+          if (Test-Path $occt) { Copy-Item $occt "$out/licenses/OpenCASCADE-LGPL-2.1-exception.txt" }
           Get-ChildItem -Recurse $out | Select-Object -ExpandProperty FullName
 
       - name: Окно запускается на Windows
@@ -147,10 +164,11 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
+          trap { Write-Output "::error title=Окно запускается на Windows::$($_.InvocationInfo.ScriptLineNumber): $_"; break }
           $out = 'kika-windows-x64'
           $deps = (dumpbin /nologo /dependents "$out/kika-gui.exe" | Out-String)
           Write-Output $deps
-          foreach ($m in [regex]::Matches($deps, '(?im)^\s+((qt6|msvcp|vcruntime)\S+\.dll)\s*$')) {
+          foreach ($m in [regex]::Matches($deps, '(?im)^\s+((qt6|msvcp|vcruntime|tk)\S+\.dll)\s*$')) {
             if (-not (Test-Path "$out/$($m.Groups[1].Value)")) { throw "нет $($m.Groups[1].Value) рядом с kika-gui.exe" }
           }
           # на машине сборки нет видеокарты — OpenGL программный, как у пользователя без драйвера

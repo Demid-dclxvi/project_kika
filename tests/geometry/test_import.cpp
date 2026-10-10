@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -280,3 +282,32 @@ TEST_CASE("G-code внутри 3MF", "[geometry]") {
   CHECK(a.entries().size() == 2);
   CHECK(a.find("/metadata/PLATE_1.gcode") != nullptr);
 }
+
+TEST_CASE("STEP: уголок из OpenCascade — замкнутая сетка того же объёма, что 3MF", "[geometry]") {
+  const std::filesystem::path dir = std::filesystem::path(KIKA_SOURCE_DIR) / "examples";
+  if (!step_supported()) {
+    // сборка без OpenCascade: понятная ошибка вместо падения
+    CHECK_THROWS_AS(load_model(dir / "bracket_L.step"), ImportError);
+    return;
+  }
+  const auto step = load_model(dir / "bracket_L.step");
+  CHECK(step.format == "STEP");
+  CHECK(step.objects == 1);
+  CHECK(step.warnings.empty());
+  const auto c = check(step.mesh);
+  CHECK(c.closed());
+  CHECK(c.shells == 1);
+  const auto sz = step.mesh.bbox().size();
+  CHECK_THAT(sz[0], WithinAbs(60, 1e-6));
+  CHECK_THAT(sz[1], WithinAbs(30, 1e-6));
+  CHECK_THAT(sz[2], WithinAbs(40, 1e-6));
+  // в 3MF отверстия и галтель — многоугольники, в STEP — точные окружности: объёмы близки
+  const auto tmf = load_model(dir / "bracket_L.3mf");
+  CHECK_THAT(step.mesh.volume(), WithinRel(tmf.mesh.volume(), 0.002));
+  // не STEP — ошибка по-русски
+  const auto bad = std::filesystem::temp_directory_path() / "kika_not_a_step.step";
+  std::ofstream(bad) << "это не STEP";
+  CHECK_THROWS_AS(load_model(bad), ImportError);
+  std::filesystem::remove(bad);
+}
+

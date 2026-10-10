@@ -88,7 +88,8 @@ ImportedModel load_model(const std::filesystem::path& path) {
 #ifdef KIKA_HAS_STEP
     m = load_step(path);
 #else
-    throw ImportError("Эта сборка программы не открывает STEP. Сохраните модель в STL или 3MF.");
+    throw ImportError("Эта сборка программы не открывает STEP: в ней нет OpenCascade. STEP открывают kika-gui и kika "
+                      "из папки программы с окном; или сохраните модель в STL или 3MF.");
 #endif
   } else if (e == ".stl") {
     m = parse_stl(read_file(path));

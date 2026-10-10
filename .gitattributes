@@ -2,9 +2,11 @@
 # G-code — эталонные данные тестов: байты не меняем, большие диффы не показываем
 *.gcode -text -diff
 *.min.js -diff
-# модели — двоичные
+# модели — двоичные; STEP — текст, но байты не меняем и большие диффы не показываем
 *.3mf binary
 *.stl binary
+*.step -text -diff
+*.stp -text -diff
 *.bat text eol=crlf
 *.sh text eol=lf
 

@@ -18,6 +18,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 option(KIKA_BUILD_TESTS "Собирать тесты" ON)
 option(KIKA_WERROR "Считать предупреждения компилятора ошибками (включено в CI)" OFF)
 option(KIKA_BUILD_GUI "Собирать окно kika-gui (нужен Qt 6: Widgets, OpenGLWidgets)" OFF)
+option(KIKA_WITH_OCCT "Чтение STEP через OpenCascade (LGPL-2.1: только динамически, библиотеки рядом с программой)" OFF)
 
 include(cmake/CompilerOptions.cmake)
 

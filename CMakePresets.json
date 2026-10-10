@@ -90,9 +90,9 @@
     },
     {
       "name": "ci-windows-gui",
-      "displayName": "CI: Windows x64 с окном, Release, предупреждения = ошибки",
+      "displayName": "CI: Windows x64 с окном, Release, тесты, предупреждения = ошибки",
       "inherits": "win-gui-release",
-      "cacheVariables": { "KIKA_WERROR": "ON" }
+      "cacheVariables": { "KIKA_WERROR": "ON", "KIKA_BUILD_TESTS": "ON" }
     },
     {
       "name": "ci-linux",
@@ -124,6 +124,7 @@
     { "name": "linux-debug", "inherits": "test-base", "configurePreset": "linux-debug" },
     { "name": "linux-release", "inherits": "test-base", "configurePreset": "linux-release" },
     { "name": "ci-windows", "inherits": "test-base", "configurePreset": "ci-windows" },
+    { "name": "ci-windows-gui", "inherits": "test-base", "configurePreset": "ci-windows-gui" },
     { "name": "ci-linux", "inherits": "test-base", "configurePreset": "ci-linux" }
   ]
 }

@@ -7,5 +7,16 @@
     "catch2",
     "clipper2",
     "zlib"
-  ]
+  ],
+  "features": {
+    "step": {
+      "description": "Чтение STEP через OpenCascade (LGPL-2.1, только динамически) — сборка с окном",
+      "dependencies": [
+        {
+          "name": "opencascade",
+          "default-features": false
+        }
+      ]
+    }
+  }
 }
