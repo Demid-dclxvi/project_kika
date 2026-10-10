@@ -18,6 +18,7 @@
 
 #include "kika/analysis/analysis.hpp"
 #include "kika/app/job_model.hpp"
+#include "kika/app/roads.hpp"
 #include "kika/app/scene.hpp"
 #include "kika/util/json.hpp"
 
@@ -51,6 +52,7 @@ struct StartupScript {
   std::optional<std::pair<int, double>> section;  // ось и доля габарита 0…1
   bool deform = false;
   std::string view;                 // iso, front, top, right
+  std::string display;              // roads (нити), voxels (сетка)
   std::string tool;                 // plane, hole, brush
   std::vector<std::pair<double, double>> picks;   // щелчки по 3D-виду, доли ширины и высоты
   QString report;                   // сохранить отчёт
@@ -135,6 +137,7 @@ class MainWindow : public QMainWindow {
   // данные
   std::shared_ptr<analysis::Model> model_;
   std::unique_ptr<app::Scene> scene_;
+  std::unique_ptr<app::Roads> roads_;
   std::shared_ptr<analysis::AnalysisResult> results_;
   json::Value results_job_;  // задание, по которому посчитаны результаты (для отчёта)
   app::UiJob job_ = app::new_job();
@@ -206,6 +209,7 @@ class MainWindow : public QMainWindow {
   QComboBox* sec_axis_ = nullptr;
   QSlider* sec_pos_ = nullptr;
   QPushButton* btn_weak_ = nullptr;
+  QButtonGroup* display_ = nullptr;
   QLabel* toast_ = nullptr;
   QTimer* toast_timer_ = nullptr;
   std::vector<QPointer<QPushButton>> fix_reselect_, load_reselect_;  // «заменить выбранным»

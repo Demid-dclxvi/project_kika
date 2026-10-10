@@ -90,6 +90,12 @@ struct FacePoint {
 // Число для подписей: десятичная запятая, без d — знаков тем меньше, чем больше число.
 std::string fmt(double v, int d = -1);
 
+// Цвет роли отрезка в поле «Структура печати» (как у вокселей с этой ролью).
+Rgb role_color(gcode::Role role);
+
+// Цвет поверх: c, смешанный с overlay в доле alpha.
+Rgb blend(const Rgb& c, const Rgb& overlay, float alpha);
+
 class Scene {
  public:
   explicit Scene(const analysis::Model& model);  // модель должна жить дольше сцены
@@ -105,6 +111,7 @@ class Scene {
 
   // Разрез: видны элементы с центром не дальше pos по оси axis (система детали). Пусто — без разреза.
   void set_section(std::optional<std::pair<int, double>> section);
+  const std::optional<std::pair<int, double>>& section() const { return section_; }
   const std::vector<VisibleFace>& faces() const { return faces_; }
 
   // Результаты расчёта (nullptr — нет) и что показывать.
@@ -119,6 +126,10 @@ class Scene {
 
   // Цвет каждой видимой грани с подсветкой (последняя подходящая подсветка сверху).
   std::vector<Rgb> face_colors(const std::vector<Overlay>& overlays) const;
+  // Цвет элемента в текущем поле (без подсветки).
+  Rgb elem_color(std::size_t e) const;
+  // Элемент по номерам ячейки сетки; −1 — ячейка пустая или вне сетки.
+  std::int32_t elem_at(int ix, int iy, int iz) const;
   Legend legend() const;
 
   // Узел и углы грани в системе детали, с перемещениями × deform.
@@ -153,7 +164,6 @@ class Scene {
   std::vector<std::int64_t> flood(std::int32_t e0, int d0, bool plane, int axis) const;
   std::pair<std::int32_t, int> step_face(std::int32_t e, int d, int t) const;
   double stress_max() const;
-  Rgb elem_color(std::size_t e) const;
 
   const analysis::Model* model_;
   std::vector<std::int32_t> ix_, iy_, iz_;
@@ -165,6 +175,7 @@ class Scene {
   std::vector<double> rho_;
 
   std::vector<char> visible_;
+  std::optional<std::pair<int, double>> section_;
   std::vector<VisibleFace> faces_;
 
   const analysis::AnalysisResult* results_ = nullptr;

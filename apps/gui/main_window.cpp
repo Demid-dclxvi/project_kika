@@ -846,6 +846,18 @@ QWidget* MainWindow::build_stage() {
     h->addWidget(sel_info_, 1);
     btn_clear_sel_ = make_button("Снять выбор", "sm");
     h->addWidget(btn_clear_sel_);
+    // готовые виды
+    auto* views = hbox(4);
+    const std::pair<const char*, const char*> view_names[] = {
+        {"iso", "Изо"}, {"front", "Спереди"}, {"top", "Сверху"}, {"right", "Справа"}};
+    for (const auto& [key, name] : view_names) {
+      auto* b = make_button(name, "sm");
+      const std::string k = key;
+      connect(b, &QPushButton::clicked, this, [this, k] { viewer_->view(k); });
+      views->addWidget(b);
+    }
+    h->addSpacing(8);
+    h->addLayout(views);
     v->addWidget(bar);
     connect(tools_, &QButtonGroup::idClicked, this, [this](int t) {
       tool_ = t == 0 ? "plane" : (t == 1 ? "hole" : "brush");
@@ -893,6 +905,26 @@ QWidget* MainWindow::build_stage() {
     dh->addWidget(deform_val_);
     dh->addWidget(deform_slider_);
     deform_ctl_->setLayout(dh);
+    // нити из G-code или расчётная сетка
+    QHBoxLayout* dseg = nullptr;
+    auto* dsegf = make_seg(&dseg);
+    display_ = new QButtonGroup(this);
+    display_->setExclusive(true);
+    const std::pair<const char*, const char*> displays[] = {
+        {"Нити", "Валики из G-code — как будет напечатано"},
+        {"Сетка", "Воксели расчётной сетки — по ним идёт расчёт и выбираются поверхности"}};
+    int did = 0;
+    for (const auto& [name, tip] : displays) {
+      auto* b = make_seg_button(name);
+      b->setToolTip(tip);
+      b->setChecked(did == 0);
+      display_->addButton(b, did++);
+      dseg->addWidget(b);
+    }
+    connect(display_, &QButtonGroup::idClicked, this, [this](int d) {
+      viewer_->set_display(d == 0 ? Viewer::Display::Roads : Viewer::Display::Voxels);
+    });
+    row1->addWidget(dsegf);
     row2->addWidget(deform_ctl_);
     auto* sh = hbox(7);
     sh->addWidget(make_label("разрез", "ctl", false));
@@ -908,14 +940,6 @@ QWidget* MainWindow::build_stage() {
     btn_weak_->setToolTip("Разрез по слою через слабое место");
     row2->addWidget(btn_weak_);
     row2->addStretch(1);
-    const std::pair<const char*, const char*> views[] = {
-        {"iso", "Изо"}, {"front", "Спереди"}, {"top", "Сверху"}, {"right", "Справа"}};
-    for (const auto& [key, name] : views) {
-      auto* b = make_button(name, "sm");
-      const std::string k = key;
-      connect(b, &QPushButton::clicked, this, [this, k] { viewer_->view(k); });
-      row2->addWidget(b);
-    }
     vb->addLayout(row2);
     v->addWidget(bar);
     connect(deform_on_, &QCheckBox::toggled, this, [this](bool) { apply_deform(); });
@@ -1803,8 +1827,10 @@ void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QS
                                 bool keep_job) {
   const auto old_model = model_;  // старая сцена ссылается на старую модель
   const auto old_scene = std::move(scene_);
+  const auto old_roads = std::move(roads_);
   model_ = std::move(model);
   scene_ = std::make_unique<app::Scene>(*model_);
+  roads_ = std::make_unique<app::Roads>(*model_, *scene_);
   results_.reset();
   results_job_ = json::Value();
   dirty_ = false;
@@ -1825,7 +1851,7 @@ void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QS
     if (model_->material_guess && material::find_material(*model_->material_guess))
       job_.material = *model_->material_guess;
   }
-  viewer_->set_scene(scene_.get());
+  viewer_->set_scene(scene_.get(), roads_.get());
   apply_section();
   const QFileInfo fi(path);
   file_label_->setText(fi.fileName());
@@ -2111,10 +2137,11 @@ void MainWindow::run_analysis() {
           double worst = 1e300;
           for (const auto& c : results_->cases) worst = std::min(worst, c.summary.sf);
           toast("Расчёт готов: минимальный запас прочности " + fmtq(worst, 2) + ".");
-          // после того как панель пересчитает размеры
-          QTimer::singleShot(80, this, [this] {
-            if (results_box_->isVisible()) panel_scroll_->verticalScrollBar()->setValue(results_box_->y());
-          });
+          // после того как панель пересчитает размеры (иначе полоса прокрутки ещё короткая)
+          for (int ms : {60, 250})
+            QTimer::singleShot(ms, this, [this] {
+              if (results_box_->isVisible()) panel_scroll_->verticalScrollBar()->setValue(results_box_->y());
+            });
         };
       },
       "Проверяю задание");
@@ -2182,6 +2209,7 @@ void MainWindow::continue_script() {
     apply_section();
   }
   if (script_.deform && results_) deform_on_->setChecked(true);
+  if (!script_.display.empty()) display_->button(script_.display == "voxels" ? 1 : 0)->click();
   if (!script_.view.empty()) viewer_->view(script_.view);
   if (!script_.tool.empty()) {
     const int id = script_.tool == "hole" ? 1 : (script_.tool == "brush" ? 2 : 0);

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "kika/app/roads.hpp"
 #include "kika/app/scene.hpp"
 
 namespace kika::gui {
@@ -29,11 +30,16 @@ struct Marker {
 
 class Viewer : public QOpenGLWidget, protected QOpenGLFunctions {
  public:
+  // Что рисовать: нити из G-code или воксели расчётной сетки.
+  enum class Display { Roads, Voxels };
+
   explicit Viewer(QWidget* parent = nullptr);
   ~Viewer() override;
 
-  // Сцена (принадлежит окну). nullptr — пусто.
-  void set_scene(app::Scene* scene);
+  // Сцена и нити (принадлежат окну). nullptr — пусто.
+  void set_scene(app::Scene* scene, const app::Roads* roads = nullptr);
+  void set_display(Display d);
+  Display display() const { return display_; }
   // Пересчитать грани (после смены разреза или сцены), позиции (деформация), цвета (поле, подсветка).
   void rebuild();
   void set_overlays(std::vector<app::Overlay> overlays);
@@ -68,6 +74,8 @@ class Viewer : public QOpenGLWidget, protected QOpenGLFunctions {
   std::optional<QPointF> project(const app::Vec3& p) const;
   void upload_positions();
   void upload_colors();
+  void upload_roads();
+  bool show_roads() const { return display_ == Display::Roads && roads_ != nullptr; }
   void build_helpers();
   void draw_lines(const std::vector<float>& verts, bool depth);
   void draw_overlay_2d();
@@ -75,6 +83,8 @@ class Viewer : public QOpenGLWidget, protected QOpenGLFunctions {
   void pan(double dx, double dy);
 
   app::Scene* scene_ = nullptr;
+  const app::Roads* roads_ = nullptr;
+  Display display_ = Display::Roads;
   std::vector<app::Overlay> overlays_;
   std::vector<Marker> markers_;
   std::optional<app::Vec3> critical_;
@@ -103,6 +113,12 @@ class Viewer : public QOpenGLWidget, protected QOpenGLFunctions {
       vbo_col_{QOpenGLBuffer::VertexBuffer}, ibo_{QOpenGLBuffer::IndexBuffer};
   int index_count_ = 0;
   bool geometry_dirty_ = true, positions_dirty_ = true, colors_dirty_ = true;
+  // нити: пересобираются целиком при любой смене поля, подсветки, разреза или деформации
+  QOpenGLBuffer road_pos_{QOpenGLBuffer::VertexBuffer}, road_nrm_{QOpenGLBuffer::VertexBuffer},
+      road_col_{QOpenGLBuffer::VertexBuffer}, road_ibo_{QOpenGLBuffer::IndexBuffer};
+  app::RoadMesh road_mesh_;
+  int road_index_count_ = 0;
+  bool roads_dirty_ = true;
   std::vector<float> grid_lines_, axis_lines_;  // x y z r g b
 };
 

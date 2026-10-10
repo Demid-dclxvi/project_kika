@@ -3,6 +3,7 @@ find_package(Catch2 3 CONFIG REQUIRED)
 add_executable(kika_tests
   analysis/test_analysis.cpp
   app/test_app.cpp
+  app/test_roads.cpp
   analysis/test_job.cpp
   fem/test_fem.cpp
   gcode/test_roles.cpp

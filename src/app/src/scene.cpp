@@ -39,6 +39,18 @@ Rgb lerp(const Rgb& a, const Rgb& b, float t) {
   return {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
 }
 
+int role_group(gcode::Role r) {
+  switch (r) {
+    case gcode::Role::OuterWall:
+    case gcode::Role::InnerWall:
+      return 0;
+    case gcode::Role::Solid:
+      return 1;
+    default:
+      return 2;
+  }
+}
+
 Rgb ramp(double t) {
   t = std::clamp(t, 0.0, 1.0);
   const double k = t * static_cast<double>(kBlueRamp.size() - 1);
@@ -92,6 +104,14 @@ double ray_triangle(const Vec3& o, const Vec3& d, const Vec3& a, const Vec3& b, 
 
 }  // namespace
 
+Rgb role_color(gcode::Role role) {
+  // Роль Unknown у воксельной модели считается сплошным материалом
+  if (role == gcode::Role::Unknown) return kRoleGroups[1].second;
+  return kRoleGroups[static_cast<std::size_t>(role_group(role))].second;
+}
+
+Rgb blend(const Rgb& c, const Rgb& overlay, float alpha) { return lerp(c, overlay, alpha); }
+
 std::string fmt(double v, int d) {
   if (!std::isfinite(v)) return "—";
   if (d < 0) {
@@ -123,17 +143,7 @@ Scene::Scene(const analysis::Model& model) : model_(&model) {
     for (std::size_t d = 0; d < 6; ++d) nbr_[e * 6 + d] = mesh.nbr[e][d];
     const auto c = vm.center(e);
     center_[e] = {c[0] - o[0], c[1] - o[1], c[2] - o[2]};
-    switch (vm.role[e]) {
-      case gcode::Role::OuterWall:
-      case gcode::Role::InnerWall:
-        role_[e] = 0;
-        break;
-      case gcode::Role::Solid:
-        role_[e] = 1;
-        break;
-      default:
-        role_[e] = 2;
-    }
+    role_[e] = static_cast<std::uint8_t>(role_group(vm.role[e]));
     rho_[e] = vm.rho(e);
   }
   npos_.resize(mesh.xyz.size());
@@ -151,7 +161,17 @@ std::optional<std::pair<std::int32_t, int>> Scene::face_of(std::int64_t key) con
   return std::pair{static_cast<std::int32_t>(it - flat_.begin()), d};
 }
 
+std::int32_t Scene::elem_at(int ix, int iy, int iz) const {
+  const auto& vm = model_->vm;
+  if (ix < 0 || iy < 0 || iz < 0 || ix >= vm.nx || iy >= vm.ny || iz >= vm.nz) return -1;
+  const std::int64_t fl = (static_cast<std::int64_t>(iz) * vm.ny + iy) * vm.nx + ix;
+  const auto it = std::lower_bound(flat_.begin(), flat_.end(), fl);
+  if (it == flat_.end() || *it != fl) return -1;
+  return static_cast<std::int32_t>(it - flat_.begin());
+}
+
 void Scene::set_section(std::optional<std::pair<int, double>> section) {
+  section_ = section;
   const std::size_t n = n_elems();
   visible_.assign(n, 1);
   if (section) {

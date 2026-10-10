@@ -154,6 +154,7 @@ void usage() {
                "  --section ОСЬ:ДОЛЯ   разрез, например z:0.5\n"
                "  --deform             показать деформацию\n"
                "  --view ВИД           iso, front, top, right\n"
+               "  --display ВИД        roads (нити), voxels (расчётная сетка)\n"
                "  --tool ИНСТРУМЕНТ    plane, hole, brush\n"
                "  --pick X,Y           щелчок по 3D-виду (доли ширины и высоты), можно несколько\n"
                "  --report ФАЙЛ.html   сохранить отчёт\n"
@@ -247,6 +248,9 @@ int main(int argc, char** argv) {
       script.deform = scripted = true;
     } else if (a == "--view") {
       script.view = next().toStdString();
+      scripted = true;
+    } else if (a == "--display") {
+      script.display = next().toStdString();
       scripted = true;
     } else if (a == "--tool") {
       script.tool = next().toStdString();

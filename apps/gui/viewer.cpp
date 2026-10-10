@@ -44,10 +44,13 @@ varying vec3 v_n;
 uniform vec3 u_up;
 uniform vec3 u_l1;
 uniform vec3 u_l2;
+uniform float u_roads;
 void main() {
   vec3 n = normalize(v_n);
   if (!gl_FrontFacing) n = -n;
   float h = 0.5 * dot(n, u_up) + 0.5;
+  // у нитей нижняя половина сечения смотрит вниз; освещаем её как верхнюю, иначе стенки темнеют
+  if (u_roads > 0.5) h = 0.6 + 0.4 * abs(dot(n, u_up));
   vec3 hemi = mix(vec3(0.541, 0.541, 0.502), vec3(1.0), h) * 0.75;
   float d = max(dot(n, u_l1), 0.0) * 0.55 + max(dot(n, u_l2), 0.0) * 0.25;
   gl_FragColor = vec4(min(v_col * (hemi + vec3(d)), vec3(1.0)), 1.0);
@@ -141,15 +144,13 @@ Viewer::Viewer(QWidget* parent) : QOpenGLWidget(parent) {
 
 Viewer::~Viewer() {
   makeCurrent();
-  vbo_pos_.destroy();
-  vbo_nrm_.destroy();
-  vbo_col_.destroy();
-  ibo_.destroy();
+  for (auto* b : {&vbo_pos_, &vbo_nrm_, &vbo_col_, &ibo_, &road_pos_, &road_nrm_, &road_col_, &road_ibo_}) b->destroy();
   doneCurrent();
 }
 
-void Viewer::set_scene(app::Scene* scene) {
+void Viewer::set_scene(app::Scene* scene, const app::Roads* roads) {
   scene_ = scene;
+  roads_ = roads;
   overlays_.clear();
   markers_.clear();
   critical_.reset();
@@ -160,14 +161,21 @@ void Viewer::set_scene(app::Scene* scene) {
   if (scene_) view("iso");
 }
 
+void Viewer::set_display(Display d) {
+  if (d == display_) return;
+  display_ = d;
+  geometry_dirty_ = positions_dirty_ = colors_dirty_ = roads_dirty_ = true;
+  update();
+}
+
 void Viewer::rebuild() {
-  geometry_dirty_ = positions_dirty_ = colors_dirty_ = true;
+  geometry_dirty_ = positions_dirty_ = colors_dirty_ = roads_dirty_ = true;
   update();
 }
 
 void Viewer::set_overlays(std::vector<app::Overlay> overlays) {
   overlays_ = std::move(overlays);
-  colors_dirty_ = true;
+  colors_dirty_ = roads_dirty_ = true;
   update();
 }
 
@@ -184,7 +192,7 @@ void Viewer::set_critical(std::optional<app::Vec3> point) {
 void Viewer::set_deform(double scale) {
   if (scale == deform_) return;
   deform_ = scale;
-  positions_dirty_ = true;
+  positions_dirty_ = roads_dirty_ = true;
   update();
 }
 
@@ -268,12 +276,12 @@ void Viewer::initializeGL() {
   line_prog_.bindAttributeLocation("a_pos", 0);
   line_prog_.bindAttributeLocation("a_col", 1);
   line_prog_.link();
-  for (auto* b : {&vbo_pos_, &vbo_nrm_, &vbo_col_, &ibo_}) {
+  for (auto* b : {&vbo_pos_, &vbo_nrm_, &vbo_col_, &ibo_, &road_pos_, &road_nrm_, &road_col_, &road_ibo_}) {
     b->create();
     b->setUsagePattern(QOpenGLBuffer::DynamicDraw);
   }
   gl_ready_ = true;
-  geometry_dirty_ = positions_dirty_ = colors_dirty_ = true;
+  geometry_dirty_ = positions_dirty_ = colors_dirty_ = roads_dirty_ = true;
 }
 
 void Viewer::resizeGL(int, int) {}
@@ -307,6 +315,20 @@ void Viewer::upload_colors() {
       for (std::size_t a = 0; a < 3; ++a) col[12 * f + 3 * q + a] = colors[f][a];
   vbo_col_.bind();
   vbo_col_.allocate(col.data(), static_cast<int>(col.size() * sizeof(float)));
+}
+
+void Viewer::upload_roads() {
+  roads_->build(road_mesh_, overlays_, deform_);
+  const auto& m = road_mesh_;
+  road_pos_.bind();
+  road_pos_.allocate(m.pos.data(), static_cast<int>(m.pos.size() * sizeof(float)));
+  road_nrm_.bind();
+  road_nrm_.allocate(m.nrm.data(), static_cast<int>(m.nrm.size()));
+  road_col_.bind();
+  road_col_.allocate(m.col.data(), static_cast<int>(m.col.size()));
+  road_ibo_.bind();
+  road_ibo_.allocate(m.idx.data(), static_cast<int>(m.idx.size() * sizeof(std::uint32_t)));
+  road_index_count_ = static_cast<int>(m.idx.size());
 }
 
 void Viewer::build_helpers() {
@@ -352,7 +374,12 @@ void Viewer::paintGL() {
   glClearColor(bg[0], bg[1], bg[2], 1);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   if (scene_ && gl_ready_) {
-    if (geometry_dirty_) {
+    const bool roads = show_roads();
+    if (roads && roads_dirty_) {
+      upload_roads();
+      roads_dirty_ = false;
+    }
+    if (!roads && geometry_dirty_) {
       const std::size_t nf = scene_->faces().size();
       std::vector<std::uint32_t> idx(nf * 6);
       for (std::size_t f = 0; f < nf; ++f) {
@@ -365,11 +392,11 @@ void Viewer::paintGL() {
       index_count_ = static_cast<int>(idx.size());
       geometry_dirty_ = false;
     }
-    if (positions_dirty_) {
+    if (!roads && positions_dirty_) {
       upload_positions();
       positions_dirty_ = false;
     }
-    if (colors_dirty_) {
+    if (!roads && colors_dirty_) {
       upload_colors();
       colors_dirty_ = false;
     }
@@ -382,7 +409,7 @@ void Viewer::paintGL() {
     line_prog_.bind();
     line_prog_.setUniformValue("u_mvp", mvp);
     draw_lines(grid_lines_, true);
-    // грани детали
+    // деталь: нити или грани вокселей
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1.0f, 1.0f);
     mesh_prog_.bind();
@@ -392,22 +419,30 @@ void Viewer::paintGL() {
     mesh_prog_.setUniformValue("u_up", up);
     mesh_prog_.setUniformValue("u_l1", QVector3D(1, -1.5f, 2).normalized());
     mesh_prog_.setUniformValue("u_l2", QVector3D(-1, 1, -0.5f).normalized());
-    vbo_pos_.bind();
+    mesh_prog_.setUniformValue("u_roads", roads ? 1.0f : 0.0f);
+    // нормали и цвета нитей — байты (Qt передаёт их в шейдер нормированными к −1…1 и 0…1)
+    (roads ? road_pos_ : vbo_pos_).bind();
     mesh_prog_.enableAttributeArray(0);
     mesh_prog_.setAttributeBuffer(0, GL_FLOAT, 0, 3);
-    vbo_nrm_.bind();
+    (roads ? road_nrm_ : vbo_nrm_).bind();
     mesh_prog_.enableAttributeArray(1);
-    mesh_prog_.setAttributeBuffer(1, GL_FLOAT, 0, 3);
-    vbo_col_.bind();
+    if (roads)
+      mesh_prog_.setAttributeBuffer(1, GL_BYTE, 0, 3, 4);
+    else
+      mesh_prog_.setAttributeBuffer(1, GL_FLOAT, 0, 3);
+    (roads ? road_col_ : vbo_col_).bind();
     mesh_prog_.enableAttributeArray(2);
-    mesh_prog_.setAttributeBuffer(2, GL_FLOAT, 0, 3);
-    ibo_.bind();
-    glDrawElements(GL_TRIANGLES, index_count_, GL_UNSIGNED_INT, nullptr);
+    if (roads)
+      mesh_prog_.setAttributeBuffer(2, GL_UNSIGNED_BYTE, 0, 3, 4);
+    else
+      mesh_prog_.setAttributeBuffer(2, GL_FLOAT, 0, 3);
+    (roads ? road_ibo_ : ibo_).bind();
+    glDrawElements(GL_TRIANGLES, roads ? road_index_count_ : index_count_, GL_UNSIGNED_INT, nullptr);
     mesh_prog_.disableAttributeArray(0);
     mesh_prog_.disableAttributeArray(1);
     mesh_prog_.disableAttributeArray(2);
-    ibo_.release();
-    vbo_col_.release();
+    (roads ? road_ibo_ : ibo_).release();
+    (roads ? road_col_ : vbo_col_).release();
     glDisable(GL_POLYGON_OFFSET_FILL);
 
     // оси и стрелки нагрузок — поверх
