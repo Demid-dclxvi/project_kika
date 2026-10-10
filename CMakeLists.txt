@@ -17,12 +17,17 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 option(KIKA_BUILD_TESTS "Собирать тесты" ON)
 option(KIKA_WERROR "Считать предупреждения компилятора ошибками (включено в CI)" OFF)
+option(KIKA_BUILD_GUI "Собирать окно kika-gui (нужен Qt 6: Widgets, OpenGLWidgets)" OFF)
 
 include(cmake/CompilerOptions.cmake)
 
 add_subdirectory(src/core)
 add_subdirectory(src/report)
+add_subdirectory(src/app)
 add_subdirectory(apps/cli)
+if(KIKA_BUILD_GUI)
+  add_subdirectory(apps/gui)
+endif()
 
 if(KIKA_BUILD_TESTS)
   enable_testing()

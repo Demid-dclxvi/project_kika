@@ -7,3 +7,7 @@
 
 # сторонний просмотрщик: не сравнивать построчно
 src/report/web/vendor/** -text -diff linguist-vendored
+
+# Файлы для пользователей Windows — с переводами строк Windows
+*.cmd text eol=crlf
+packaging/windows/*.txt text eol=crlf

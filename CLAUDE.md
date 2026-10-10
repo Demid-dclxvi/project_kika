@@ -7,15 +7,17 @@
 - Общение, документы, сообщения коммитов и сообщения пользователю — по-русски. Идентификаторы — по-английски, комментарии — по-русски.
 - `prototype/` — эталон, не изменять. Каждый перенесённый модуль сверяется с ним (`tools/compare_with_prototype.py`) и покрывается тестами в `tests/`.
 - Сознательные отличия от прототипа записывать в `docs/ARCHITECTURE.md`, таблица «Отличия от прототипа». Состояние модулей — там же и в README.
-- Новые зависимости — только через `vcpkg.json` и только с допустимой лицензией; сразу вносить в `THIRD_PARTY.md`. AGPL не использовать.
+- Новые зависимости — только через `vcpkg.json` и только с допустимой лицензией; сразу вносить в `THIRD_PARTY.md`. AGPL не использовать. Исключение — Qt для окна: готовые сборки Qt в DLL (LGPL-3.0, только динамически), не vcpkg; новые модули Qt — только под LGPL.
 - Единицы мм, Н, МПа; нотация Фойгта `[11, 22, 33, 23, 13, 12]`, инженерные сдвиги.
 
 ## Сборка и проверка
 
-- Пресеты: `win-debug`, `win-release`, `linux-debug`, `linux-release`; в CI — `ci-windows`, `ci-linux` (предупреждения = ошибки).
+- Пресеты: `win-debug`, `win-release`, `linux-debug`, `linux-release`; окно на Windows — `win-gui-debug`, `win-gui-release` (Qt из `QT_ROOT_DIR`, среда выполнения /MD, триплет `x64-windows-static-md`, без тестов); в CI — `ci-windows`, `ci-windows-gui`, `ci-linux` (с окном; предупреждения = ошибки).
 - `cmake --preset linux-release && cmake --build --preset linux-release && ctest --preset linux-release`.
 - Ядро — без сторонних библиотек (JSON свой, `kika::json`). Отчёт (`src/report`) использует zlib; через vcpkg подключаются zlib и Catch2 (тесты). Новые зависимости в ядро — только если своё писать неразумно.
 - Файлы просмотрщика отчёта (`src/report/web`) встраиваются в программу скриптом `cmake/EmbedFiles.cmake`. Отчёт проверять в браузере: Chromium есть в среде (Playwright для Node — `NODE_PATH=/opt/npm-tools/node_modules`), WebGL — через `--use-angle=swiftshader --enable-unsafe-swiftshader`.
 - В облачной среде Claude скачивание исходников библиотек с github.com/codeload закрыто сетевой политикой, поэтому vcpkg там не собирает Catch2. Ядро, `src/report` и `apps/cli` проверять прямой сборкой g++ и clang++ (`-std=c++20 -Wall -Wextra -Wpedantic -Wshadow -Werror`, нужны `-pthread` и системная zlib `-lz`), полную сборку с тестами — через GitHub Actions (`gh run watch`; логи CI оттуда не скачиваются, видны только статусы шагов).
 - Сверка с прототипом: `python tools/compare_with_prototype.py --kika <путь к kika>` (нужны numpy и scipy).
-- Демид собирает на Windows в Visual Studio; готовый `kika.exe` берёт из артефактов CI.
+- Демид собирает на Windows в Visual Studio; готовые программы берёт из артефактов CI: `kika-gui-windows-x64` (папка с окном, Qt, примерами) и `kika-windows-x64` (один `kika.exe`).
+- Окно (`apps/gui`, Qt 6 Widgets, без moc): логику без Qt держать в `src/app` и покрывать тестами. Код должен собираться с заголовками Qt 6.4 (Ubuntu в CI) и 6.8 (Windows). Проверка без человека: `kika-gui --example --run --field sf --screenshot окно.png` (ещё `--section z:0.5`, `--deform`, `--tool hole --pick 0.5,0.5`, `--report`, `--save-job`); код выхода 1 — были ошибки. `QWidget::grab` не видит рисования `QPainter` поверх OpenGL, поэтому снимок дорисовывается из `grabFramebuffer` (уже сделано в сценарии).
+- Окно в облачной среде Claude: Qt не установлен, а системные пакеты без спроса не ставим. Заголовки Qt 6.4 — из пакетов Ubuntu (`apt-get download qt6-base-dev qt6-base-dev-tools libgl-dev libglx-dev libopengl-dev libegl-dev mesa-common-dev`, распаковать `dpkg -x` в свою папку), библиотеки Qt — из колеса PySide6 (`pip download`, распаковать). Компилировать с `-isystem` к заголовкам и `-fPIC`, линковать `libQt6*.so.6` из колеса с `-Wl,-rpath`; запускать под `Xvfb` с `QT_PLUGIN_PATH` на плагины из колеса и `LC_ALL=C.UTF-8`.

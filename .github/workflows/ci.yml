@@ -20,6 +20,9 @@ jobs:
           - name: Windows x64
             os: windows-latest
             preset: ci-windows
+          - name: Windows x64, окно
+            os: windows-latest
+            preset: ci-windows-gui
           - name: Linux
             os: ubuntu-latest
             preset: ci-linux
@@ -31,9 +34,21 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Ninja
+      - name: Ninja, Qt и виртуальный экран
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build qt6-base-dev libgl-dev libgl1-mesa-dri xvfb fonts-dejavu-core
+
+      - name: Qt для окна
+        if: matrix.preset == 'ci-windows-gui'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
 
       - name: Кэш библиотек vcpkg
         uses: actions/cache@v6
@@ -56,10 +71,11 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Тесты
+        if: matrix.preset != 'ci-windows-gui'
         run: ctest --preset ${{ matrix.preset }}
 
       - name: kika.exe запускается на чистой Windows
-        if: runner.os == 'Windows'
+        if: matrix.preset == 'ci-windows'
         shell: pwsh
         timeout-minutes: 5
         run: |
@@ -92,8 +108,71 @@ jobs:
           python -m pip install --quiet numpy scipy
           python tools/compare_with_prototype.py --kika build/${{ matrix.preset }}/bin/kika
 
+      - name: Окно на Linux (виртуальный экран)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          xvfb-run -a -s "-screen 0 1600x1000x24" build/${{ matrix.preset }}/bin/kika-gui \
+            --example --run --field sf --screenshot kika-gui-linux.png --size 1400x900
+
+      - name: Сборка окна в папку
+        if: matrix.preset == 'ci-windows-gui'
+        shell: pwsh
+        run: |
+          $out = 'kika-windows-x64'
+          New-Item -ItemType Directory -Force $out, "$out/examples", "$out/licenses" | Out-Null
+          Copy-Item build/${{ matrix.preset }}/bin/kika-gui.exe, build/${{ matrix.preset }}/bin/kika.exe $out
+          # библиотеки Qt, модули платформы и программный OpenGL (opengl32sw.dll); русские подписи диалогов
+          windeployqt --release --no-compiler-runtime --no-system-d3d-compiler --translations ru "$out/kika-gui.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'windeployqt' }
+          # среда выполнения Visual C++ рядом с программой — устанавливать её не нужно
+          $crt = Get-ChildItem "$env:VCToolsRedistDir/x64" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+          Copy-Item "$($crt.FullName)/*.dll" $out
+          Copy-Item prototype/examples/*.gcode, prototype/examples/*.job.json "$out/examples"
+          Copy-Item packaging/windows/* $out
+          Copy-Item THIRD_PARTY.md "$out/licenses"
+          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile "$out/licenses/LGPL-3.0.txt" -MaximumRetryCount 3 -RetryIntervalSec 10
+          Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile "$out/licenses/GPL-3.0.txt" -MaximumRetryCount 3 -RetryIntervalSec 10
+          Get-ChildItem -Recurse $out | Select-Object -ExpandProperty FullName
+
+      - name: Окно запускается на Windows
+        if: matrix.preset == 'ci-windows-gui'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $out = 'kika-windows-x64'
+          $deps = (dumpbin /nologo /dependents "$out/kika-gui.exe" | Out-String)
+          Write-Output $deps
+          foreach ($m in [regex]::Matches($deps, '(?im)^\s+((qt6|msvcp|vcruntime)\S+\.dll)\s*$')) {
+            if (-not (Test-Path "$out/$($m.Groups[1].Value)")) { throw "нет $($m.Groups[1].Value) рядом с kika-gui.exe" }
+          }
+          # на машине сборки нет видеокарты — OpenGL программный, как у пользователя без драйвера
+          $env:QT_OPENGL = 'software'
+          $p = Start-Process -FilePath "$out/kika-gui.exe" -Wait -PassThru `
+            -ArgumentList '--example', '--run', '--field', 'sf', '--screenshot', "$PWD/kika-gui-windows.png", '--size', '1400x900'
+          if ($p.ExitCode -ne 0) { throw "kika-gui: код выхода $($p.ExitCode)" }
+          if (-not (Test-Path kika-gui-windows.png)) { throw 'kika-gui: нет снимка окна' }
+          & "$out/kika.exe" --version; if ($LASTEXITCODE -ne 0) { throw 'kika --version' }
+
+      - name: Программа с окном для Windows
+        if: matrix.preset == 'ci-windows-gui'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kika-gui-windows-x64
+          path: kika-windows-x64/
+          retention-days: 30
+
+      - name: Снимки окна
+        if: always() && (matrix.preset == 'ci-windows-gui' || runner.os == 'Linux')
+        uses: actions/upload-artifact@v7
+        with:
+          name: kika-gui-screenshot-${{ runner.os }}
+          path: kika-gui-*.png
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Программа для Windows
-        if: runner.os == 'Windows'
+        if: matrix.preset == 'ci-windows'
         uses: actions/upload-artifact@v7
         with:
           name: kika-windows-x64
@@ -101,7 +180,7 @@ jobs:
           retention-days: 30
 
       - name: Пример отчёта
-        if: runner.os == 'Windows'
+        if: matrix.preset == 'ci-windows'
         uses: actions/upload-artifact@v7
         with:
           name: kika-report-example

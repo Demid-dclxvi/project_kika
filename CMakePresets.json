@@ -38,6 +38,30 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "windows-gui-base",
+      "hidden": true,
+      "inherits": "windows-base",
+      "description": "С окном kika-gui. Qt подключается библиотеками DLL, поэтому среда выполнения C++ тоже DLL (/MD). Папка Qt — в переменной окружения QT_ROOT_DIR.",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
+        "KIKA_BUILD_GUI": "ON",
+        "KIKA_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "win-gui-debug",
+      "displayName": "Windows x64 с окном (Qt) — Debug",
+      "inherits": "windows-gui-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "win-gui-release",
+      "displayName": "Windows x64 с окном (Qt) — Release",
+      "inherits": "windows-gui-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
       "name": "linux-base",
       "hidden": true,
       "inherits": "base",
@@ -65,10 +89,16 @@
       "cacheVariables": { "KIKA_WERROR": "ON" }
     },
     {
-      "name": "ci-linux",
-      "displayName": "CI: Linux Release, предупреждения = ошибки",
-      "inherits": "linux-release",
+      "name": "ci-windows-gui",
+      "displayName": "CI: Windows x64 с окном, Release, предупреждения = ошибки",
+      "inherits": "win-gui-release",
       "cacheVariables": { "KIKA_WERROR": "ON" }
+    },
+    {
+      "name": "ci-linux",
+      "displayName": "CI: Linux Release с окном, предупреждения = ошибки",
+      "inherits": "linux-release",
+      "cacheVariables": { "KIKA_WERROR": "ON", "KIKA_BUILD_GUI": "ON" }
     }
   ],
   "buildPresets": [
@@ -76,7 +106,10 @@
     { "name": "win-release", "configurePreset": "win-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "win-gui-debug", "configurePreset": "win-gui-debug" },
+    { "name": "win-gui-release", "configurePreset": "win-gui-release" },
     { "name": "ci-windows", "configurePreset": "ci-windows" },
+    { "name": "ci-windows-gui", "configurePreset": "ci-windows-gui" },
     { "name": "ci-linux", "configurePreset": "ci-linux" }
   ],
   "testPresets": [

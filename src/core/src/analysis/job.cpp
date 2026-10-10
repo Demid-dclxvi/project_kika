@@ -315,6 +315,8 @@ std::vector<Fixture> parse_fixtures(const Value* v) {
 
 }  // namespace
 
+Region region_from_json(const json::Value& where, const std::string& name) { return parse_region(&where, name); }
+
 material::Material material_from_json(const json::Value& spec) {
   if (spec.is_string()) {
     const auto* m = material::find_material(spec.as_string());

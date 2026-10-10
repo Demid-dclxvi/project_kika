@@ -74,6 +74,9 @@ struct Job {
 // Разбор задания. Бросает JobError / SelectionError с понятным сообщением.
 Job parse_job(const json::Value& v);
 
+// Область из задания (поле "where"): название стороны, объект или список (объединение).
+Region region_from_json(const json::Value& where, const std::string& name);
+
 // Материал: название из базы или объект {"base": "PETG", "E1": …} с переопределениями.
 material::Material material_from_json(const json::Value& spec);
 
