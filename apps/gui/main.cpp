@@ -1,7 +1,7 @@
 // kika-gui: окно для расчёта прочности — открыть G-code, выбрать на модели закрепления и места
 // нагрузок, посчитать и посмотреть результат в 3D.
 //
-// kika-gui [деталь.gcode] [задание.json]
+// kika-gui [деталь.gcode | модель.stl/.3mf/.step] [задание.json]
 // Для проверок без человека (CI): --example --run --field sf --screenshot окно.png и т. п.
 
 #include <QApplication>
@@ -145,7 +145,7 @@ QPalette light_palette() {
 void usage() {
   std::cout << "kika-gui " << kika::kVersion
             << " — окно расчёта прочности деталей для FDM-печати\n\n"
-               "  kika-gui [деталь.gcode] [задание.json]\n\n"
+               "  kika-gui [деталь.gcode | модель.stl] [задание.json]\n\n"
                "Для проверок без человека:\n"
                "  --example            открыть пример (кронштейн)\n"
                "  --run                посчитать задание\n"
@@ -155,10 +155,12 @@ void usage() {
                "  --deform             показать деформацию\n"
                "  --view ВИД           iso, front, top, right\n"
                "  --display ВИД        roads (нити), voxels (расчётная сетка)\n"
+               "  --rotate ОСЬ         повернуть модель на 90° вокруг x, y или z и нарезать заново\n"
                "  --tool ИНСТРУМЕНТ    plane, hole, brush\n"
                "  --pick X,Y           щелчок по 3D-виду (доли ширины и высоты), можно несколько\n"
                "  --report ФАЙЛ.html   сохранить отчёт\n"
                "  --save-job ФАЙЛ.json сохранить задание\n"
+               "  --save-gcode ФАЙЛ    сохранить G-code своей нарезки модели\n"
                "  --screenshot ФАЙЛ    снимок окна и выход (код 1, если были ошибки)\n"
                "  --size ШxВ           размер окна\n";
 }
@@ -252,6 +254,15 @@ int main(int argc, char** argv) {
     } else if (a == "--display") {
       script.display = next().toStdString();
       scripted = true;
+    } else if (a == "--rotate") {
+      const QString v = next().toLower();
+      const int axis = v.size() == 1 ? static_cast<int>(QString("xyz").indexOf(v)) : -1;
+      if (axis < 0) {
+        std::cerr << "kika-gui: --rotate ожидает ось x, y или z\n";
+        return 2;
+      }
+      script.rotate.push_back(axis);
+      scripted = true;
     } else if (a == "--tool") {
       script.tool = next().toStdString();
       scripted = true;
@@ -265,6 +276,9 @@ int main(int argc, char** argv) {
       scripted = true;
     } else if (a == "--report") {
       script.report = next();
+      scripted = true;
+    } else if (a == "--save-gcode") {
+      script.save_gcode = next();
       scripted = true;
     } else if (a == "--save-job") {
       script.save_job = next();

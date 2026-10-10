@@ -9,6 +9,7 @@
 
 #include "kika/analysis/analysis.hpp"
 #include "kika/gcode/parser.hpp"
+#include "kika/geometry/import.hpp"
 #include "kika/geometry/mesh.hpp"
 #include "kika/slicer/print_job.hpp"
 #include "kika/slicer/slicer.hpp"
@@ -240,4 +241,35 @@ TEST_CASE("Задание: настройки нарезки, поворот д�
         const Transform back = kika::slicer::rotation_of(e);
         for (std::size_t i = 0; i < 9; ++i) REQUIRE_THAT(back.r[i], WithinAbs(r.r[i], 1e-12));
       }
+}
+
+TEST_CASE("Слайсер: L-кронштейн из 3MF в разных положениях — контуры слоёв замкнуты", "[slicer]") {
+  // Сетка из CAD-ядра: на гранях веера узких треугольников от одной вершины. На высоте среза
+  // соседние рёбра веера дают одну и ту же точку — такие отрезки нулевой длины раньше
+  // выбрасывались, и контур рвался (в положении «на боку» — 7 разрывов).
+  const auto im = kika::geometry::load_model(std::filesystem::path(KIKA_SOURCE_DIR) / "examples/bracket_L.3mf");
+  REQUIRE(kika::geometry::check(im.mesh).closed());
+  const double volume = im.mesh.volume();
+  CHECK_THAT(volume, WithinRel(14000.88, 1e-4));
+  const std::array<std::array<double, 3>, 6> turns{{{0, 0, 0}, {0, 90, 0}, {90, 0, 0}, {0, -90, 0}, {90, 0, 45}, {37, 21, 13}}};
+  for (const auto& rot : turns) {
+    kika::slicer::PrintJob p;
+    p.rotate = rot;
+    p.settings.infill_density = 1.0;
+    const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, p), p.settings, {}, "кронштейн");
+    INFO("поворот " << rot[0] << ", " << rot[1] << ", " << rot[2]);
+    for (const auto& w : r.warnings)
+      if (w.find("не замкнута") != std::string::npos) FAIL_CHECK(w);
+    // при 100 % заполнении пластика — примерно объём детали (± щели между нитями и слой у краёв)
+    const double extruded = r.filament_mm * std::numbers::pi * 1.75 * 1.75 / 4;
+    CHECK_THAT(extruded, WithinRel(volume, 0.06));
+    // как стоит в файле — печатается без поддержек; на боку (поворот вокруг Y) стенка висит в воздухе
+    auto has_overhang = [&] {
+      for (const auto& w : r.warnings)
+        if (w.find("Нависание") != std::string::npos) return true;
+      return false;
+    };
+    if (rot == std::array<double, 3>{0, 0, 0}) CHECK(r.warnings.empty());
+    if (rot == std::array<double, 3>{0, 90, 0}) CHECK(has_overhang());
+  }
 }

@@ -185,6 +185,54 @@ TEST_CASE("Выбор переносится на сетку другой дет
   for (auto k : moved) REQUIRE(k % 6 == 1);
 }
 
+TEST_CASE("Поворот детали на столе: закрепления и нагрузки поворачиваются вместе с ней", "[app]") {
+  // балка плашмя (длина по X) и та же балка стоя (длина по Z): поворот вокруг Y на −90°, X → Z
+  kika::analysis::ModelOptions o;
+  o.voxel = 2.0;
+  const auto flat = beam(2.0);
+  const auto up = kika::analysis::build_model(
+      kika::gcode::load(fs::path(KIKA_SOURCE_DIR) / "tests" / "data" / "cantilever_upright.gcode"), o);
+  Scene s1(flat), s2(up);
+  auto job = kika::app::new_job();
+  kika::app::UiFixture fx;
+  fx.id = job.new_id();
+  fx.faces = s1.side(0);  // торец −X
+  fx.components = "xz";
+  job.fixtures.push_back(fx);
+  auto ld = kika::app::default_load("force", job.new_id());
+  ld.faces = s1.side(1);  // торец +X
+  ld.dir = "-z";
+  job.cases[0].loads.push_back(ld);
+  auto mv = kika::app::default_load("displacement", job.new_id());
+  mv.faces = s1.side(1);
+  mv.disp = {0.5, std::nullopt, -1.0};
+  job.cases[0].loads.push_back(mv);
+  auto mo = kika::app::default_load("moment", job.new_id());
+  mo.faces = s1.side(1);
+  mo.axis = "custom";
+  mo.vec = {0, 1, 1};
+  job.cases[0].loads.push_back(mo);
+
+  const std::array<double, 9> ry{0, 0, -1, 0, 1, 0, 1, 0, 0};  // x' = −z, z' = x
+  kika::app::rotate_job(job, s1, s2, ry);
+  CHECK(kika::app::can_run(job));
+  CHECK(jaccard(job.fixtures[0].faces, s2.side(4)) > 0.95);  // торец −Z: стоит на нём
+  CHECK(job.fixtures[0].components == "xz");                 // x → z, z → x
+  const auto& loads = job.cases[0].loads;
+  CHECK(jaccard(loads[0].faces, s2.side(5)) > 0.95);  // верхний торец
+  CHECK(loads[0].dir == "+x");                         // было −Z: x' = −z = +1
+  // перемещение 0,5 по X → по Z; −1 по Z → +1 по X (z переходит в −x); Y свободно
+  REQUIRE(loads[1].disp[0].has_value());
+  REQUIRE(loads[1].disp[2].has_value());
+  CHECK(*loads[1].disp[0] == 1.0);
+  CHECK(!loads[1].disp[1].has_value());
+  CHECK(*loads[1].disp[2] == 0.5);
+  CHECK(loads[2].axis == "custom");
+  CHECK_THAT(loads[2].vec[0], WithinAbs(-1, 1e-12));
+  CHECK_THAT(loads[2].vec[1], WithinAbs(1, 1e-12));
+  CHECK_THAT(loads[2].vec[2], WithinAbs(0, 1e-12));
+}
+
 TEST_CASE("Задание из окна → JSON → тот же расчёт, что по геометрическому заданию", "[app]") {
   const auto m = beam(2.0);
   Scene s(m);

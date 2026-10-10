@@ -1,0 +1,39 @@
+{
+  "model": "bracket_L.3mf",
+  "print": {
+    "printer": "sparkx_i7",
+    "layer_height": 0.2,
+    "walls": 3,
+    "top_layers": 5,
+    "bottom_layers": 4,
+    "infill": 25,
+    "pattern": "grid"
+  },
+  "title": "Уголок-упор",
+  "subtitle": "Модель из 3MF, нарезка своим слайсером: основание лежит на столе, стенка растёт по Z. Основание прикручено двумя винтами, в верхний край стенки упирается деталь.",
+  "material": "PETG",
+  "target_sf": 2.0,
+  "fixtures": [
+    {
+      "name": "Винты",
+      "where": [
+        {"hole": {"axis": "z", "center": [25, 15], "radius": 2.6}},
+        {"hole": {"axis": "z", "center": [50, 15], "radius": 2.6}}
+      ]
+    },
+    {"name": "Опора на стол", "where": {"side": "zmin"}, "components": "z"}
+  ],
+  "cases": [
+    {
+      "name": "Постоянный упор 10 Н",
+      "duration": "long",
+      "temperature": 30,
+      "loads": [{"type": "force", "where": {"side": "zmax"}, "vector": [10, 0, 0]}]
+    },
+    {
+      "name": "Толчок 55 Н",
+      "duration": "short",
+      "loads": [{"type": "force", "where": {"side": "zmax"}, "vector": [55, 0, 0]}]
+    }
+  ]
+}

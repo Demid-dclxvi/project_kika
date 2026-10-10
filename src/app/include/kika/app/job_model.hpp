@@ -97,4 +97,10 @@ UiJob from_job_json(const json::Value& job, const analysis::Model& model, std::v
 // Перенос всех граней задания на другую сетку (смена детальности).
 void remap_faces(UiJob& job, const Scene& from, const Scene& to);
 
+// Деталь повёрнута на столе: r — поворот (матрица 3 × 3 по строкам) из положения сетки from
+// в положение сетки to. Грани закреплений и нагрузок переносятся вместе с деталью, направления
+// нагрузок, оси моментов, заданные перемещения и закреплённые оси поворачиваются тоже.
+// Точно — для поворотов, кратных 90°; грани, чья нормаль после поворота не по оси, теряются.
+void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& r);
+
 }  // namespace kika::app

@@ -20,6 +20,8 @@
 #include "kika/app/job_model.hpp"
 #include "kika/app/roads.hpp"
 #include "kika/app/scene.hpp"
+#include "kika/geometry/import.hpp"
+#include "kika/slicer/print_job.hpp"
 #include "kika/util/json.hpp"
 
 class QButtonGroup;
@@ -53,10 +55,12 @@ struct StartupScript {
   bool deform = false;
   std::string view;                 // iso, front, top, right
   std::string display;              // roads (нити), voxels (сетка)
+  std::vector<int> rotate;          // повороты модели на 90° (оси 0…2) с новой нарезкой
   std::string tool;                 // plane, hole, brush
   std::vector<std::pair<double, double>> picks;   // щелчки по 3D-виду, доли ширины и высоты
   QString report;                   // сохранить отчёт
   QString save_job;                 // сохранить задание
+  QString save_gcode;               // сохранить G-code своей нарезки
   QString screenshot;               // снимок окна и выход
 };
 
@@ -112,6 +116,9 @@ class MainWindow : public QMainWindow {
   void open_example();
   void save_job();
   bool save_job_to(const QString& path);
+  void save_gcode(const QString& path = {});
+  void reslice();
+  void rotate_part(int axis);
   void export_report(const QString& path = {});
   void about();
   void rebuild_mesh();
@@ -125,10 +132,30 @@ class MainWindow : public QMainWindow {
   void finish_work(const std::function<void()>& done);
   analysis::Progress progress_cb();
 
-  void load_model(const QString& gcode_path, long long max_elems, bool keep_job, std::function<void()> after = {});
-  void on_model_ready(std::shared_ptr<analysis::Model> model, const QString& path, long long max_elems, bool keep_job);
+  // Открыть G-code или модель (STL, 3MF, STEP — режется своим слайсером).
+  void load_model(const QString& path, long long max_elems, bool keep_job, std::function<void()> after = {});
+  // Модель: уже прочитанная сетка и/или готовый G-code берутся, если переданы (перенарезка, смена детальности).
+  struct LoadPlan {
+    QString path;
+    long long max_elems = 0;
+    bool keep_job = false;
+    std::optional<std::array<double, 3>> turned_from;  // деталь повёрнута: прежние углы — поверхности переносятся
+    std::function<void()> after;
+    bool model = false;
+    std::shared_ptr<const geometry::ImportedModel> mesh;
+    slicer::PrintJob print;
+    std::shared_ptr<const std::string> gcode;
+  };
+  void start_load(LoadPlan plan);
+  void render_print_settings();
+  void read_print_settings();
+  void update_print_state();
+  void on_model_ready(std::shared_ptr<analysis::Model> model, const QString& path, long long max_elems, bool keep_job,
+                      std::optional<std::array<double, 3>> turned_from = std::nullopt);
   bool apply_job_json(const json::Value& job);
   void open_job_file(const QString& path);
+  // Задание: G-code или модель — из задания или source_override (файл, открытый вместе с заданием).
+  void open_job_json(json::Value j, const QString& dir, const QString& source_override);
   void continue_script();
   QString examples_dir() const;
   // Задание JSON (формат kika run): заголовок — из открытого задания или по имени G-code.
@@ -136,6 +163,17 @@ class MainWindow : public QMainWindow {
 
   // данные
   std::shared_ptr<analysis::Model> model_;
+  // Открыта модель, нарезанная своим слайсером (пусто — открыт G-code).
+  struct ModelSource {
+    std::shared_ptr<const geometry::ImportedModel> mesh;
+    slicer::PrintJob print;  // как нарезано сейчас
+    std::shared_ptr<const std::string> gcode;
+    int layers = 0;
+    double filament_g = 0, time_s = 0;
+    std::vector<std::string> warnings;
+  };
+  std::optional<ModelSource> source_;
+  slicer::PrintJob print_ui_;  // настройки в панели (до «Нарезать заново» могут отличаться)
   std::unique_ptr<app::Scene> scene_;
   std::unique_ptr<app::Roads> roads_;
   std::shared_ptr<analysis::AnalysisResult> results_;
@@ -173,6 +211,19 @@ class MainWindow : public QMainWindow {
   QPushButton* btn_open_job_ = nullptr;
   QPushButton* btn_save_job_ = nullptr;
   QPushButton* btn_report_ = nullptr;
+  QPushButton* btn_save_gcode_ = nullptr;
+  QWidget* print_box_ = nullptr;
+  QComboBox* printer_combo_ = nullptr;
+  QComboBox* pattern_combo_ = nullptr;
+  QLineEdit* layer_edit_ = nullptr;
+  QLineEdit* walls_edit_ = nullptr;
+  QLineEdit* infill_edit_ = nullptr;
+  QLineEdit* top_edit_ = nullptr;
+  QLineEdit* bottom_edit_ = nullptr;
+  QLabel* rotate_label_ = nullptr;
+  QLabel* slice_info_ = nullptr;
+  QVBoxLayout* print_warns_ = nullptr;
+  QPushButton* btn_slice_ = nullptr;
   QScrollArea* panel_scroll_ = nullptr;
   QLabel* model_info_ = nullptr;
   QVBoxLayout* model_warns_ = nullptr;

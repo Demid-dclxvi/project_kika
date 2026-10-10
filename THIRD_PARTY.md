@@ -7,13 +7,14 @@
 | Библиотека | Версия | Лицензия | Где | Как подключена |
 | --- | --- | --- | --- | --- |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | только тесты, в продукт не входит | статически |
-| [zlib](https://zlib.net) | 1.3.x (по baseline vcpkg) | Zlib | сжатие данных в HTML-отчёте (`src/report`) | статически, через vcpkg |
+| [zlib](https://zlib.net) | 1.3.x (по baseline vcpkg) | Zlib | сжатие данных в HTML-отчёте (`src/report`), распаковка 3MF (`src/geometry`) | статически, через vcpkg |
+| [Clipper2](https://github.com/AngusJohnson/Clipper2) | 2.0.1 (по baseline vcpkg) | BSL-1.0 | контуры слоёв в своём слайсере (`src/slicer`): объединение, смещение, пересечение | статически, через vcpkg |
 | [three.js](https://threejs.org) | r149 | MIT | 3D-просмотр в HTML-отчёте | файл `src/report/web/vendor/three.min.js` встраивается в программу и в каждый отчёт; уведомление об авторских правах — в начале файла, текст лицензии — `three.LICENSE.txt` рядом |
 | [Qt](https://www.qt.io) — модули Core, Gui, Widgets, OpenGL, OpenGLWidgets | 6.8 (Windows), от 6.4 (Linux) | LGPL-3.0 | окно `kika-gui` | динамически: библиотеки Qt6*.dll лежат рядом с программой отдельными файлами; модули под GPL и коммерческие не используются |
 | Mesa llvmpipe (`opengl32sw.dll` из поставки Qt) | из поставки Qt | MIT | программный OpenGL для окна на Windows без драйвера видеокарты | отдельная DLL, загружается Qt при необходимости |
 | Среда выполнения Visual C++ (`msvcp140*.dll`, `vcruntime140*.dll`) | из Visual Studio 2022 | лицензия Visual Studio (распространяемые файлы) | только папка с окном на Windows | DLL рядом с программой; `kika.exe` из обычной сборки — без неё |
 
-Версии zlib и Catch2 фиксирует `vcpkg-configuration.json` (baseline реестра vcpkg).
+Версии zlib, Clipper2 и Catch2 фиксирует `vcpkg-configuration.json` (baseline реестра vcpkg).
 
 ### Qt и LGPL-3.0
 
@@ -28,10 +29,8 @@ Qt подключается не через vcpkg: LGPL требует дина�
 
 | Библиотека | Лицензия | Для чего |
 | --- | --- | --- |
-| Clipper2 | BSL-1.0 | контуры слоёв в слайсере |
 | Manifold | Apache-2.0 | булевы операции над сетками |
 | fTetWild | MPL-2.0 | тетраэдрическая сетка |
-| lib3mf | BSD-2-Clause | формат 3MF |
 | OpenCascade | LGPL-2.1 с исключением | STEP, твердотельная геометрия; динамически |
 
 ## Не используем
@@ -42,6 +41,8 @@ Qt подключается не через vcpkg: LGPL требует дина�
 | libbgcode | AGPL-3.0 | свой декодер .bgcode по открытой спецификации |
 | TetGen | AGPL-3.0 | fTetWild |
 | Triangle | только по договору с автором | fTetWild, Clipper2 |
+
+lib3mf (BSD-2-Clause) была в плане для 3MF; оказалось достаточно своего разбора: ZIP читается через zlib, XML — небольшим своим разборщиком (`src/geometry`).
 
 CLI11 (BSD-3-Clause) и nlohmann/json (MIT) использовались в первых версиях консольной программы; их заменили свой разбор параметров и JSON ядра (`kika::json`) — задания на расчёт читает само ядро, и ему не нужны сторонние библиотеки.
 

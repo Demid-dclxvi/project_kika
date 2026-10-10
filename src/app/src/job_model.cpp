@@ -440,4 +440,77 @@ void remap_faces(UiJob& job, const Scene& from, const Scene& to) {
     for (auto& l : c.loads) l.faces = to.from_points(from.to_points(l.faces));
 }
 
+void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& r) {
+  auto mul = [&](const Vec3& v) {
+    return Vec3{r[0] * v[0] + r[1] * v[1] + r[2] * v[2], r[3] * v[0] + r[4] * v[1] + r[5] * v[2],
+                r[6] * v[0] + r[7] * v[1] + r[8] * v[2]};
+  };
+  // ось и знак, куда переходит ось a; пусто — поворот не кратен 90°
+  auto axis_of = [](const Vec3& v) -> std::optional<std::pair<int, double>> {
+    for (int a = 0; a < 3; ++a)
+      if (std::abs(v[static_cast<std::size_t>(a)]) > 0.999) return std::pair{a, v[static_cast<std::size_t>(a)] > 0 ? 1.0 : -1.0};
+    return std::nullopt;
+  };
+  std::array<std::optional<std::pair<int, double>>, 3> image;
+  for (int a = 0; a < 3; ++a) {
+    Vec3 e{0, 0, 0};
+    e[static_cast<std::size_t>(a)] = 1;
+    image[static_cast<std::size_t>(a)] = axis_of(mul(e));
+  }
+  // система детали — от минимального угла габарита: после поворота угол другой
+  const Vec3 s = from.size();
+  Vec3 lo{1e300, 1e300, 1e300};
+  for (int c = 0; c < 8; ++c) {
+    const Vec3 q = mul({(c & 1) ? s[0] : 0.0, (c & 2) ? s[1] : 0.0, (c & 4) ? s[2] : 0.0});
+    for (std::size_t a = 0; a < 3; ++a) lo[a] = std::min(lo[a], q[a]);
+  }
+  auto move = [&](const std::vector<std::int64_t>& keys) {
+    std::vector<FacePoint> pts;
+    for (const auto& fp : from.to_points(keys)) {
+      Vec3 n{0, 0, 0};
+      n[static_cast<std::size_t>(fp.dir >> 1)] = (fp.dir & 1) ? 1.0 : -1.0;
+      const auto ax = axis_of(mul(n));
+      if (!ax) continue;
+      const Vec3 q = mul(fp.p);
+      pts.push_back({{q[0] - lo[0], q[1] - lo[1], q[2] - lo[2]}, ax->first * 2 + (ax->second > 0 ? 1 : 0)});
+    }
+    return to.from_points(pts);
+  };
+  // направление "+x"… поворачивается в другую ось; не по оси — в свой вектор
+  auto turn_key = [&](std::string& key, Vec3& vec) {
+    if (key.size() != 2 || (key[0] != '+' && key[0] != '-') || key[1] < 'x' || key[1] > 'z') return;  // normal_in…
+    Vec3 v{0, 0, 0};
+    v[static_cast<std::size_t>(key[1] - 'x')] = key[0] == '+' ? 1.0 : -1.0;
+    const Vec3 w = mul(v);
+    if (const auto ax = axis_of(w)) {
+      key = std::string(ax->second > 0 ? "+" : "-") + static_cast<char>('x' + ax->first);
+    } else {
+      key = "custom";
+      vec = w;
+    }
+  };
+  for (auto& f : job.fixtures) {
+    f.faces = move(f.faces);
+    std::string comps;
+    for (char c : f.components)
+      if (c >= 'x' && c <= 'z')
+        if (const auto& im = image[static_cast<std::size_t>(c - 'x')]) comps += static_cast<char>('x' + im->first);
+    std::sort(comps.begin(), comps.end());
+    if (!comps.empty()) f.components = comps;
+  }
+  for (auto& c : job.cases)
+    for (auto& l : c.loads) {
+      l.faces = move(l.faces);
+      l.vec = mul(l.vec);  // свой вектор — и направления силы, и оси момента
+      turn_key(l.dir, l.vec);
+      turn_key(l.axis, l.vec);
+      std::array<std::optional<double>, 3> disp{};
+      for (std::size_t a = 0; a < 3; ++a)
+        if (l.disp[a]) {
+          if (const auto& im = image[a]) disp[static_cast<std::size_t>(im->first)] = *l.disp[a] * im->second;
+        }
+      l.disp = disp;
+    }
+}
+
 }  // namespace kika::app

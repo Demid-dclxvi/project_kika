@@ -187,30 +187,27 @@ std::vector<Paths64> slice_layers(const TriangleMesh& m, const std::vector<doubl
       // вершина на плоскости считается выше неё
       const bool up[3] = {m.vertices[tr[0]][2] >= z, m.vertices[tr[1]][2] >= z, m.vertices[tr[2]][2] >= z};
       if (up[0] == up[1] && up[1] == up[2]) continue;
-      Point64 pts[2];
-      std::uint64_t keys[2];
-      int n = 0;
-      for (int e = 0; e < 3 && n < 2; ++e) {
+      // Направление — чтобы тело было слева (d = ẑ × n). У треугольника с наружной нормалью
+      // (вершины против часовой стрелки снаружи) отрезок начинается на ребре, которое в порядке
+      // вершин идёт сверху вниз, и кончается на ребре снизу вверх. Правило не зависит от длины
+      // отрезка: отрезок нулевой длины (вершина на плоскости, узкий треугольник) тоже остаётся
+      // в цепочке — иначе контур рвётся на стыке рёбер.
+      Cut cut{Point64(0, 0), Point64(0, 0), 0, 0};
+      int found = 0;
+      for (int e = 0; e < 3; ++e) {
         const int f = (e + 1) % 3;
         if (up[e] == up[f]) continue;
-        pts[n] = edge_point(m, tr[static_cast<std::size_t>(e)], tr[static_cast<std::size_t>(f)], z);
-        keys[n] = edge_key(tr[static_cast<std::size_t>(e)], tr[static_cast<std::size_t>(f)]);
-        ++n;
+        const auto i = tr[static_cast<std::size_t>(e)], j = tr[static_cast<std::size_t>(f)];
+        if (up[e]) {
+          cut.a = edge_point(m, i, j, z);
+          cut.ka = edge_key(i, j);
+        } else {
+          cut.b = edge_point(m, i, j, z);
+          cut.kb = edge_key(i, j);
+        }
+        ++found;
       }
-      if (n != 2) continue;
-      // направление — чтобы тело было слева: d = ẑ × n
-      const Vec3& a = m.vertices[tr[0]];
-      const Vec3& b = m.vertices[tr[1]];
-      const Vec3& c = m.vertices[tr[2]];
-      const double nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
-      const double ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
-      const double dot = static_cast<double>(pts[1].x - pts[0].x) * -ny + static_cast<double>(pts[1].y - pts[0].y) * nx;
-      if (dot < 0) {
-        std::swap(pts[0], pts[1]);
-        std::swap(keys[0], keys[1]);
-      }
-      if (pts[0] == pts[1]) continue;
-      cuts.push_back({pts[0], pts[1], keys[0], keys[1]});
+      if (found == 2) cuts.push_back(cut);
     }
     Paths64 loops = chain(cuts, open);
     if (!loops.empty()) {
@@ -514,6 +511,44 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
     res.warnings.push_back(std::format("Сетка не замкнута: в {} местах контур слоя не сошёлся — там будут пустоты.", open));
 
   const double w = s.line_width;
+  {
+    // Нависания: часть слоя, под которой нет опоры даже с запасом в полширины линии и наклоном
+    // 45°. Узкие полоски (пологие стенки, верх горизонтальных отверстий) не в счёт. Поддержки
+    // свой слайсер не строит — только предупреждает.
+    const double allow = 0.5 * w + s.layer_height;
+    double worst = 0, worst_z = 0;
+    for (std::size_t i = 1; i < n; ++i) {
+      if (regions[i].empty()) continue;
+      Paths64 free = Clipper2Lib::Difference(regions[i], offset(regions[i - 1], allow), FillRule::NonZero);
+      if (free.empty()) continue;
+      free = offset(offset(free, -0.3), 0.3);
+      const double a = area_mm2(free);
+      if (a > worst) {
+        worst = a;
+        worst_z = mids[i];
+      }
+    }
+    // опора на стол: деталь на ребре или вершине держится плохо
+    double amax = 0;
+    for (const auto& r : regions) amax = std::max(amax, area_mm2(r));
+    const double a0 = area_mm2(regions[0]);
+    if (a0 < 0.1 * amax && a0 < 100)
+      res.warnings.push_back(
+          a0 < 1 ? std::format("Деталь стоит на столе вершиной или ребром (самый широкий слой — {:.0f} мм²) — оторвётся "
+                               "при печати. Поставьте её на стол плоской гранью.",
+                               amax)
+                 : std::format("Деталь касается стола всего {:.0f} мм² (самый широкий слой — {:.0f} мм²) — может "
+                               "оторваться при печати. Поставьте её на стол плоской гранью.",
+                               a0, amax));
+    if (worst > 20) {
+      std::string zs = std::format("{:.1f}", worst_z);
+      std::replace(zs.begin(), zs.end(), '.', ',');
+      res.warnings.push_back(std::format(
+          "Нависание без опоры: на высоте {} мм в воздухе {:.0f} мм² слоя. Поддержки свой слайсер не строит — "
+          "поверните деталь (обычно большой плоской гранью на стол) или нарежьте её в слайсере с поддержками.",
+          zs, worst));
+    }
+  }
   std::vector<Layer> layers(n);
   Pt pos{0, 0};
   for (std::size_t i = 0; i < n; ++i) {

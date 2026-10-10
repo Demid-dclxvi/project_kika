@@ -585,21 +585,26 @@ QWidget* MainWindow::build_top_bar() {
   file_label_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   h->addWidget(file_label_, 1);
 
-  btn_open_ = make_button("Открыть G-code", "primary");
+  btn_open_ = make_button("Открыть", "primary");
+  btn_open_->setToolTip("Модель (STL, 3MF, STEP) — нарезается своим слайсером, или готовый G-code");
   btn_example_ = make_button("Пример");
   btn_open_job_ = make_button("Открыть задание");
   btn_save_job_ = make_button("Сохранить задание");
   btn_report_ = make_button("Отчёт");
+  btn_save_gcode_ = make_button("Сохранить G-code");
+  btn_save_gcode_->setToolTip("G-code своей нарезки — для печати");
   auto* btn_about = make_button("О программе");
   btn_example_->setToolTip("Настенный кронштейн для лампы, напечатанный на боку, с готовым заданием");
   btn_open_job_->setToolTip("Задание на расчёт (.json): закрепления, нагрузки, материал");
   btn_report_->setToolTip("Отчёт с 3D-видом в одном файле HTML — открывается в любом браузере");
-  for (auto* b : {btn_open_, btn_example_, btn_open_job_, btn_save_job_, btn_report_, btn_about}) h->addWidget(b);
+  for (auto* b : {btn_open_, btn_example_, btn_open_job_, btn_save_job_, btn_save_gcode_, btn_report_, btn_about})
+    h->addWidget(b);
   connect(btn_open_, &QPushButton::clicked, this, [this] { open_gcode_dialog(); });
   connect(btn_example_, &QPushButton::clicked, this, [this] { open_example(); });
   connect(btn_open_job_, &QPushButton::clicked, this, [this] { open_job_dialog(); });
   connect(btn_save_job_, &QPushButton::clicked, this, [this] { save_job(); });
   connect(btn_report_, &QPushButton::clicked, this, [this] { export_report(); });
+  connect(btn_save_gcode_, &QPushButton::clicked, this, [this] { save_gcode(); });
   connect(btn_about, &QPushButton::clicked, this, [this] { about(); });
   return bar;
 }
@@ -647,6 +652,70 @@ QWidget* MainWindow::build_panel() {
     m->addLayout(row);
     m->addWidget(make_hint("Точнее — дольше расчёт. Для первой оценки хватит «обычной»."));
     l->addWidget(mesh_ctl_);
+
+    // настройки печати — только для модели (STL, 3MF, STEP), которую режет свой слайсер
+    print_box_ = new QWidget;
+    auto* pb = new QVBoxLayout(print_box_);
+    pb->setContentsMargins(0, 4, 0, 0);
+    pb->setSpacing(8);
+    pb->addWidget(make_label("Настройки печати", "itemTitle", false));
+    printer_combo_ = new Combo;
+    for (const auto& pr : slicer::printers()) printer_combo_->addItem(qs(pr.name), qs(pr.key));
+    pb->addWidget(make_field("Принтер", printer_combo_));
+    auto* pg = new QGridLayout;
+    pg->setHorizontalSpacing(8);
+    pg->setVerticalSpacing(8);
+    layer_edit_ = make_num(0.2);
+    walls_edit_ = make_num(2);
+    infill_edit_ = make_num(15);
+    top_edit_ = make_num(5);
+    bottom_edit_ = make_num(3);
+    pattern_combo_ = make_combo({{"grid", "Сетка"}, {"rectilinear", "Прямые через слой"}, {"triangles", "Треугольники"},
+                                 {"line", "Линии"}},
+                                "grid");
+    pg->addWidget(make_field("Слой, мм", layer_edit_), 0, 0);
+    pg->addWidget(make_field("Стенок", walls_edit_), 0, 1);
+    pg->addWidget(make_field("Заполнение, %", infill_edit_), 0, 2);
+    pg->addWidget(make_field("Сплошных сверху", top_edit_), 1, 0);
+    pg->addWidget(make_field("Сплошных снизу", bottom_edit_), 1, 1);
+    pg->addWidget(make_field("Рисунок", pattern_combo_), 1, 2);
+    for (int c = 0; c < 3; ++c) pg->setColumnStretch(c, 1);
+    pb->addLayout(pg);
+    auto* rot = hbox(6);
+    rot->addWidget(make_label("Поворот", "fieldLabel", false));
+    for (int a = 0; a < 3; ++a) {
+      auto* b = make_button(QString("↻ %1").arg(QChar("XYZ"[a])), "sm");
+      b->setToolTip(QString("Повернуть деталь на 90° вокруг оси %1").arg(QChar("XYZ"[a])));
+      connect(b, &QPushButton::clicked, this, [this, a] { rotate_part(a); });
+      rot->addWidget(b);
+    }
+    auto* reset = make_button("Сброс", "sm");
+    connect(reset, &QPushButton::clicked, this, [this] {
+      print_ui_.rotate = {0, 0, 0};
+      render_print_settings();
+      update_print_state();
+    });
+    rot->addWidget(reset);
+    rot->addStretch();
+    pb->addLayout(rot);
+    rotate_label_ = make_hint("");
+    pb->addWidget(rotate_label_);
+    btn_slice_ = make_button("Нарезать заново", "primary");
+    pb->addWidget(btn_slice_);
+    slice_info_ = make_hint("");
+    pb->addWidget(slice_info_);
+    print_warns_ = new QVBoxLayout;
+    print_warns_->setSpacing(6);
+    pb->addLayout(print_warns_);
+    pb->addWidget(make_hint("Пластик берётся из шага «Материал»: температуры и обдув в G-code — для него. Ориентация "
+                            "на столе сильнее всего влияет на прочность: слои плохо держат растяжение поперёк."));
+    print_box_->hide();
+    l->addWidget(print_box_);
+    for (auto* e : {layer_edit_, walls_edit_, infill_edit_, top_edit_, bottom_edit_})
+      connect(e, &QLineEdit::textEdited, this, [this](const QString&) { read_print_settings(); });
+    connect(printer_combo_, &QComboBox::currentIndexChanged, this, [this](int) { read_print_settings(); });
+    connect(pattern_combo_, &QComboBox::currentIndexChanged, this, [this](int) { read_print_settings(); });
+    connect(btn_slice_, &QPushButton::clicked, this, [this] { reslice(); });
     connect(detail_slider_, &QSlider::valueChanged, this, [this](int x) {
       detail_ = x;
       detail_label_->setText(kDetail[x].label);
@@ -693,6 +762,7 @@ QWidget* MainWindow::build_panel() {
     connect(mat_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
       job_.material = combo_key(mat_combo_);
       job_.overrides.clear();
+      print_ui_.settings.filament = slicer::filament_preset(job_.material);
       render_material();
       mark_dirty();
     });
@@ -967,6 +1037,7 @@ void MainWindow::render_all() {
 
 void MainWindow::render_model_info() {
   mesh_ctl_->setVisible(model_ != nullptr);
+  render_print_settings();
   {
     const QSignalBlocker block(detail_slider_);
     detail_slider_->setValue(detail_);
@@ -984,14 +1055,20 @@ void MainWindow::render_model_info() {
   const std::string slicer = str("slicer"), ft = str("filament_type"), pattern = str("infill_pattern");
   QStringList size;
   for (const auto& x : s.find("size")->as_array()) size << fmtq(x.as_double(), 1);
-  std::vector<std::pair<QString, QString>> rows = {
-      {"Слайсер", slicer == "unknown" || slicer.empty() ? "—" : esc(slicer)},
+  std::vector<std::pair<QString, QString>> rows;
+  if (source_) {
+    const auto& im = *source_->mesh;
+    rows.emplace_back("Модель", esc(im.format) + " · " + ru_int(static_cast<long long>(im.mesh.triangles.size())) +
+                                    " треуг. · " + fmtq(im.mesh.volume() / 1000, 2) + " см³");
+  }
+  rows.insert(rows.end(), {
+      {"Слайсер", slicer == "unknown" || slicer.empty() ? "—" : (slicer == "Kika" ? QString("свой") : esc(slicer))},
       {"Пластик", ft.empty() ? "—" : esc(ft)},
       {"Слой", fmtq(s.find("layer_height")->as_double(), 2) + " мм"},
       {"Заполнение", QString::number(std::lround(s.find("infill_density")->as_double() * 100)) + "% " + esc(pattern)},
       {"Габарит", size.join(" × ") + " мм"},
       {"Сетка", fmtq(s.find("voxel")->as_double(), 2) + " мм · " + ru_int(s.find("elements")->as_int()) + " эл."},
-  };
+  });
   model_info_->setText(kv_table(rows));
   model_info_->setObjectName("");
   repolish(model_info_);
@@ -1001,6 +1078,144 @@ void MainWindow::render_model_info() {
     model_warns_->addWidget(make_warn("Отброшено " + QString::number(std::lround(removed * 100)) +
                                       "% материала, не связанного с основной деталью (другие объекты на столе или "
                                       "мусор)."));
+}
+
+// ---------------------------------------------------------------------------- настройки печати модели
+
+void MainWindow::render_print_settings() {
+  print_box_->setVisible(source_.has_value());
+  if (!source_) return;
+  const auto& s = print_ui_.settings;
+  {
+    const QSignalBlocker b1(printer_combo_), b2(pattern_combo_);
+    const int pi = printer_combo_->findData(qs(s.printer.key));
+    printer_combo_->setCurrentIndex(pi >= 0 ? pi : 0);
+    const int qi = pattern_combo_->findData(qs(std::string(slicer::pattern_key(s.pattern))));
+    pattern_combo_->setCurrentIndex(qi >= 0 ? qi : 0);
+  }
+  auto put = [](QLineEdit* e, double v) {
+    if (!e->hasFocus()) e->setText(num_text(v));
+    set_bad(e, false);
+  };
+  put(layer_edit_, s.layer_height);
+  put(walls_edit_, s.wall_loops);
+  put(infill_edit_, std::round(s.infill_density * 1000) / 10);
+  put(top_edit_, s.top_layers);
+  put(bottom_edit_, s.bottom_layers);
+  const auto& r = print_ui_.rotate;
+  rotate_label_->setText(r == std::array<double, 3>{0, 0, 0}
+                             ? QString("Как в файле модели.")
+                             : QString("Повёрнута: X %1°, Y %2°, Z %3°.").arg(fmtq(r[0], 0), fmtq(r[1], 0), fmtq(r[2], 0)));
+  const int h = static_cast<int>(source_->time_s / 3600), m = static_cast<int>(std::fmod(source_->time_s, 3600) / 60);
+  slice_info_->setText(QString("Сейчас: слоёв %1 · пластик %2 г · печать около %3")
+                           .arg(source_->layers)
+                           .arg(fmtq(source_->filament_g, 0))
+                           .arg(h > 0 ? QString("%1 ч %2 мин").arg(h).arg(m) : QString("%1 мин").arg(std::max(1, m))));
+  // замечания к модели и нарезке: незамкнутая сетка, нависания, опора на стол
+  clear_layout(print_warns_);
+  for (const auto& w : source_->mesh->warnings) print_warns_->addWidget(make_warn(qs(w)));
+  for (const auto& w : source_->warnings) print_warns_->addWidget(make_warn(qs(w)));
+  update_print_state();
+}
+
+void MainWindow::read_print_settings() {
+  auto& s = print_ui_.settings;
+  if (const auto* pr = slicer::find_printer(combo_key(printer_combo_))) {
+    const auto fil = s.filament;
+    s.printer = *pr;
+    s.filament = fil;
+  }
+  if (const auto pk = slicer::pattern_from_key(combo_key(pattern_combo_))) s.pattern = *pk;
+  auto read = [](QLineEdit* e, double lo, double hi, auto set) {
+    const auto x = parse_num(e->text());
+    const bool ok = x && *x >= lo && *x <= hi;
+    set_bad(e, !ok);
+    if (ok) set(*x);
+  };
+  read(layer_edit_, 0.05, 0.6, [&](double x) {
+    s.layer_height = x;
+    s.first_layer_height = x;
+  });
+  read(walls_edit_, 1, 20, [&](double x) { s.wall_loops = static_cast<int>(std::lround(x)); });
+  read(infill_edit_, 0, 100, [&](double x) { s.infill_density = x / 100; });
+  read(top_edit_, 0, 50, [&](double x) { s.top_layers = static_cast<int>(std::lround(x)); });
+  read(bottom_edit_, 0, 50, [&](double x) { s.bottom_layers = static_cast<int>(std::lround(x)); });
+  update_print_state();
+}
+
+void MainWindow::update_print_state() {
+  if (!btn_slice_) return;
+  bool changed = false;
+  if (source_) {
+    // пластик на нарезку не влияет (только температуры в G-code) — его не сравниваем
+    auto a = print_ui_, b = source_->print;
+    a.settings.filament = b.settings.filament;
+    changed = json::dump(slicer::print_to_json(a)) != json::dump(slicer::print_to_json(b));
+  }
+  btn_slice_->setEnabled(changed && !busy_);
+  btn_slice_->setText(changed ? "Нарезать заново" : "Нарезано");
+}
+
+void MainWindow::rotate_part(int axis) {
+  const auto r = geometry::Transform::rotation(axis, 90) * slicer::rotation_of(print_ui_.rotate);
+  print_ui_.rotate = slicer::euler_xyz(r);
+  render_print_settings();
+}
+
+void MainWindow::reslice() {
+  if (!source_ || busy_) return;
+  LoadPlan plan;
+  plan.path = gcode_path_;
+  plan.max_elems = model_max_elems_;
+  plan.keep_job = true;
+  if (print_ui_.rotate != source_->print.rotate) plan.turned_from = source_->print.rotate;
+  plan.model = true;
+  plan.mesh = source_->mesh;
+  plan.print = print_ui_;
+  plan.print.settings.filament = slicer::filament_preset(job_.material);
+  start_load(std::move(plan));
+}
+
+void MainWindow::save_gcode(const QString& path) {
+  if (!source_ || busy_) return;
+  QString out = path;
+  const bool interactive = out.isEmpty();
+  const QFileInfo mi(gcode_path_);
+  if (interactive) {
+    out = QFileDialog::getSaveFileName(this, "Сохранить G-code", mi.absolutePath() + "/" + mi.completeBaseName() + ".gcode",
+                                       "G-code (*.gcode)");
+    if (out.isEmpty()) return;
+  }
+  // нарезка та, что посчитана; пластик — из шага «Материал»
+  auto print = source_->print;
+  print.settings.filament = slicer::filament_preset(job_.material);
+  const bool stale = btn_slice_ && btn_slice_->isEnabled();
+  auto mesh = source_->mesh;
+  auto work = [mesh, print, out]() {
+    auto r = slicer::slice(slicer::placed(mesh->mesh, print), print.settings, {}, mesh->name);
+    write_file(out, r.gcode);
+    return r;
+  };
+  const QString note = stale ? " Новые настройки в шаге 1 ещё не применены — нажмите «Нарезать заново»." : QString();
+  if (!interactive) {  // сценарий проверки — сразу
+    try {
+      const auto r = work();
+      toast("G-code сохранён: " + QFileInfo(out).fileName() + note);
+    } catch (const std::exception& e) {
+      toast(QString::fromUtf8(e.what()), true);
+    }
+    return;
+  }
+  start_work(
+      [work, out, note, this]() -> std::function<void()> {
+        const auto r = work();
+        return [this, out, note, r] {
+          toast(QString("G-code сохранён: %1 (%2 г пластика %3).").arg(QFileInfo(out).fileName(), fmtq(r.filament_g, 0),
+                                                                       qs(job_.material)) +
+                note);
+        };
+      },
+      "Пишу G-code");
 }
 
 void MainWindow::render_material() {
@@ -1682,6 +1897,9 @@ void MainWindow::update_run_state() {
   run_hint_->setVisible(!busy_ && !ready);
   btn_save_job_->setEnabled(!busy_ && model_);
   btn_report_->setEnabled(!busy_ && results_);
+  btn_save_gcode_->setVisible(source_.has_value());
+  btn_save_gcode_->setEnabled(!busy_ && source_);
+  update_print_state();
 }
 
 void MainWindow::set_busy(bool busy) {
@@ -1806,25 +2024,86 @@ void MainWindow::load_model(const QString& path, long long max_elems, bool keep_
     toast("Двоичный G-code (.bgcode) не поддерживается — сохраните из слайсера обычный .gcode.", true);
     return;
   }
-  last_dir_ = QFileInfo(path).absolutePath();
-  const auto fspath = to_path(path);
+  LoadPlan plan;
+  plan.path = path;
+  plan.max_elems = max_elems;
+  plan.keep_job = keep_job;
+  plan.after = std::move(after);
+  plan.model = geometry::is_model_file(to_path(path)) && !path.endsWith(".gcode.3mf", Qt::CaseInsensitive);
+  if (plan.model) {
+    plan.print = print_ui_;
+    plan.print.settings.filament = slicer::filament_preset(job_.material);
+  }
+  start_load(std::move(plan));
+}
+
+void MainWindow::start_load(LoadPlan plan) {
+  if (busy_) return;
+  last_dir_ = QFileInfo(plan.path).absolutePath();
+  const auto fspath = to_path(plan.path);
   auto prog = progress_cb();
+  const bool gcode3mf = plan.path.endsWith(".gcode.3mf", Qt::CaseInsensitive);
   start_work(
-      [this, fspath, path, max_elems, keep_job, prog, after]() -> std::function<void()> {
-        auto tp = gcode::load(fspath);
+      [fspath, plan, prog, gcode3mf, this]() mutable -> std::function<void()> {
+        gcode::Toolpaths tp;
+        std::shared_ptr<ModelSource> src;
+        if (plan.model) {
+          src = std::make_shared<ModelSource>();
+          src->mesh = plan.mesh;
+          if (!src->mesh) {
+            prog("import", 0.02, "Читаю модель");
+            src->mesh = std::make_shared<const geometry::ImportedModel>(geometry::load_model(fspath));
+          }
+          src->print = plan.print;
+          src->gcode = plan.gcode;
+          if (!src->gcode) {
+            // нарезка — первые 30 % полосы хода
+            auto sprog = [prog](double f, std::string_view t) { prog("slice", 0.02 + 0.28 * f, "Нарезка: " + std::string(t)); };
+            auto r = slicer::slice(slicer::placed(src->mesh->mesh, src->print), src->print.settings, sprog, src->mesh->name);
+            src->gcode = std::make_shared<const std::string>(std::move(r.gcode));
+            src->layers = r.layers;
+            src->filament_g = r.filament_g;
+            src->time_s = r.print_time_s;
+            src->warnings = std::move(r.warnings);
+          }
+          tp = gcode::parse(*src->gcode);
+        } else if (gcode3mf) {
+          std::ifstream f(fspath, std::ios::binary);
+          const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+          const auto g = geometry::gcode_from_3mf(bytes);
+          if (!g) throw std::runtime_error("В этом 3MF нет G-code (Metadata/plate_1.gcode). Если это модель — сохраните "
+                                           "её с расширением .3mf.");
+          tp = gcode::parse(*g);
+        } else {
+          tp = gcode::load(fspath);
+        }
         analysis::ModelOptions mo;
-        mo.max_elems = static_cast<int>(max_elems);
+        mo.max_elems = static_cast<int>(plan.max_elems);
         auto model = std::make_shared<analysis::Model>(analysis::build_model(std::move(tp), mo, prog));
-        return [this, model, path, max_elems, keep_job, after] {
-          on_model_ready(model, path, max_elems, keep_job);
-          if (after) after();
+        return [this, model, plan, src] {
+          if (src) {
+            if (plan.gcode && source_) {  // та же нарезка — сведения о ней прежние
+              src->layers = source_->layers;
+              src->filament_g = source_->filament_g;
+              src->time_s = source_->time_s;
+              src->warnings = source_->warnings;
+            }
+            source_ = *src;
+            print_ui_ = src->print;
+          } else {
+            source_.reset();
+          }
+          on_model_ready(model, plan.path, plan.max_elems, plan.keep_job, plan.turned_from);
+          if (src && (!src->mesh->warnings.empty() || !src->warnings.empty()))
+            toast("Есть замечания к модели или нарезке — см. «Настройки печати» в шаге 1.", false);
+          if (plan.after) plan.after();
         };
       },
-      "Читаю G-code");
+      plan.model ? "Читаю модель" : "Читаю G-code");
 }
 
 void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QString& path, long long max_elems,
-                                bool keep_job) {
+                                bool keep_job, std::optional<std::array<double, 3>> turned_from) {
   const auto old_model = model_;  // старая сцена ссылается на старую модель
   const auto old_scene = std::move(scene_);
   const auto old_roads = std::move(roads_);
@@ -1841,7 +2120,29 @@ void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QS
   gcode_path_ = path;
   model_max_elems_ = max_elems;
   detail_ = nearest_detail(max_elems);
-  if (keep_job && old_scene) {
+  if (keep_job && turned_from && old_scene && source_) {
+    // деталь повёрнута на столе: поверхности и направления нагрузок поворачиваются вместе с ней
+    // поворот из прежнего положения в новое: R_new · R_oldᵀ (обратный к повороту — транспонированный)
+    geometry::Transform back = slicer::rotation_of(*turned_from);
+    std::swap(back.r[1], back.r[3]);
+    std::swap(back.r[2], back.r[6]);
+    std::swap(back.r[5], back.r[7]);
+    const auto turn = slicer::rotation_of(source_->print.rotate) * back;
+    auto count = [](const app::UiJob& j) {
+      int n = 0;
+      for (const auto& f : j.fixtures) n += f.faces.empty() ? 0 : 1;
+      for (const auto& c : j.cases)
+        for (const auto& l : c.loads) n += l.faces.empty() ? 0 : 1;
+      return n;
+    };
+    const int before = count(job_);
+    app::rotate_job(job_, *old_scene, *scene_, turn.r);
+    const int after = count(job_);
+    if (after < before)
+      toast("Деталь повёрнута не на 90° — часть поверхностей закреплений и нагрузок потерялась, выберите их заново.");
+    else if (before > 0)
+      toast("Деталь повёрнута — закрепления и нагрузки повёрнуты вместе с ней.");
+  } else if (keep_job && old_scene) {
     app::remap_faces(job_, *old_scene, *scene_);
   } else if (!keep_job) {
     job_ = app::new_job();
@@ -1918,36 +2219,93 @@ void MainWindow::open_job_file(const QString& path) {
     toast(err, true);
     return;
   }
-  if (auto inner = unwrap_prototype_save(*j)) j = std::move(inner);
   last_dir_ = QFileInfo(path).absolutePath();
-  // G-code из задания — относительно папки задания
-  QString gpath;
-  if (const auto* g = j->find("gcode"); g && g->is_string() && !g->as_string().empty()) {
-    const QString name = qs(g->as_string());
-    gpath = QFileInfo(name).isAbsolute() ? name : QDir(QFileInfo(path).absolutePath()).filePath(name);
-    if (!QFileInfo::exists(gpath)) gpath.clear();
+  open_job_json(std::move(*j), QFileInfo(path).absolutePath(), {});
+}
+
+namespace {
+
+// Тип пластика задания: "PETG" или {"base": "PETG", …}.
+std::string job_material_key(const json::Value& j) {
+  if (const auto* m = j.find("material")) {
+    if (m->is_string()) return m->as_string();
+    if (const auto* b = m->is_object() ? m->find("base") : nullptr; b && b->is_string()) return b->as_string();
+  }
+  return "PLA";
+}
+
+}  // namespace
+
+void MainWindow::open_job_json(json::Value j, const QString& dir, const QString& source_override) {
+  if (auto inner = unwrap_prototype_save(j)) j = std::move(*inner);
+  const auto resolve = [&dir](const json::Value* v) -> QString {
+    if (!v || !v->is_string() || v->as_string().empty()) return {};
+    const QString name = qs(v->as_string());
+    const QString p = QFileInfo(name).isAbsolute() ? name : QDir(dir).filePath(name);
+    return QFileInfo::exists(p) ? p : QString();
+  };
+  QString gpath = resolve(j.find("gcode"));
+  QString mpath = resolve(j.find("model"));
+  if (!source_override.isEmpty()) {
+    if (geometry::is_model_file(to_path(source_override)) && !source_override.endsWith(".gcode.3mf", Qt::CaseInsensitive))
+      mpath = source_override, gpath.clear();
+    else
+      gpath = source_override, mpath.clear();
   }
   std::optional<long long> max;
-  if (const auto* m = j->find("max_elems"); m && m->is_number()) max = static_cast<long long>(m->as_double());
+  if (const auto* m = j.find("max_elems"); m && m->is_number()) max = static_cast<long long>(m->as_double());
   const auto same = [](const QString& a, const QString& b) {
     return !a.isEmpty() && !b.isEmpty() && QFileInfo(a).canonicalFilePath() == QFileInfo(b).canonicalFilePath();
   };
+
+  // модель — режется своим слайсером с настройками "print" из задания
+  const bool model_job = !mpath.isEmpty() || (j.find("model") && gpath.isEmpty());
+  if (model_job) {
+    if (mpath.isEmpty()) {
+      pending_job_ = j;
+      toast("Задание прочитано. Теперь откройте модель этой детали (" + qs(j.find("model")->is_string() ? j.find("model")->as_string() : "") + ").");
+      return;
+    }
+    slicer::PrintJob pj;
+    try {
+      pj = slicer::print_from_json(j.find("print"), job_material_key(j));
+    } catch (const std::exception& e) {
+      toast("Ошибка в задании: " + QString::fromUtf8(e.what()), true);
+      return;
+    }
+    const bool same_cut = source_ && same(mpath, gcode_path_) && (!max || *max == model_max_elems_) &&
+                          json::dump(slicer::print_to_json(pj)) == json::dump(slicer::print_to_json(source_->print));
+    if (same_cut) {
+      apply_job_json(j);
+      return;
+    }
+    pending_job_ = j;
+    LoadPlan plan;
+    plan.path = mpath;
+    plan.max_elems = max ? *max : kDetail[detail_].n;
+    plan.model = true;
+    plan.print = pj;
+    if (source_ && same(mpath, gcode_path_)) plan.mesh = source_->mesh;
+    start_load(std::move(plan));
+    return;
+  }
+
   if (!gpath.isEmpty() && (!model_ || !same(gpath, gcode_path_) || (max && *max != model_max_elems_))) {
     // грани в задании привязаны к сетке: строим ту же, что при сохранении
-    pending_job_ = *j;
+    pending_job_ = j;
     load_model(gpath, max ? *max : kDetail[detail_].n, false);
   } else if (model_) {
     if (max && *max != model_max_elems_) {
-      pending_job_ = *j;
+      pending_job_ = j;
       load_model(gcode_path_, *max, false);
     } else {
-      apply_job_json(*j);
+      apply_job_json(j);
     }
   } else {
-    pending_job_ = *j;
-    const auto* g = j->find("gcode");
+    const auto* g = j.find("gcode");
     toast("Задание прочитано. Теперь откройте G-code этой детали" +
           (g && g->is_string() ? " (" + qs(g->as_string()) + ")" : QString()) + ".");
+    pending_job_ = std::move(j);
   }
 }
 
@@ -1959,26 +2317,22 @@ void MainWindow::open_paths(const QStringList& paths) {
     else
       gcode = p;
   }
-  if (!job.isEmpty() && !gcode.isEmpty()) {
+  if (!job.isEmpty()) {
     QString err;
     auto j = read_json(job, &err);
     if (!j) {
       toast(err, true);
       return;
     }
-    if (auto inner = unwrap_prototype_save(*j)) j = std::move(inner);
-    pending_job_ = *j;
-    long long max = kDetail[detail_].n;
-    if (const auto* m = j->find("max_elems"); m && m->is_number()) max = static_cast<long long>(m->as_double());
-    load_model(gcode, max, false);
-  } else if (!job.isEmpty()) {
-    open_job_file(job);
+    last_dir_ = QFileInfo(job).absolutePath();
+    open_job_json(std::move(*j), QFileInfo(job).absolutePath(), gcode);
   } else if (!gcode.isEmpty()) {
-    long long max = kDetail[detail_].n;
-    if (pending_job_)
-      if (const auto* m = pending_job_->find("max_elems"); m && m->is_number())
-        max = static_cast<long long>(m->as_double());
-    load_model(gcode, max, false);
+    // задание, прочитанное раньше файла детали, применяется к нему
+    if (pending_job_) {
+      open_job_json(*pending_job_, last_dir_, gcode);
+      return;
+    }
+    load_model(gcode, kDetail[detail_].n, false);
   }
 }
 
@@ -1997,7 +2351,12 @@ json::Value MainWindow::job_json(const QString& gcode_name) const {
   std::string title = job_title_;
   if (title.empty()) title = ss(QFileInfo(gcode_path_).completeBaseName());
   if (title.empty()) title = "Деталь";
-  json::Value j = app::to_job_json(job_, title, ss(gcode_name), model_max_elems_);
+  json::Value j = app::to_job_json(job_, title, source_ ? std::string() : ss(gcode_name), model_max_elems_);
+  if (source_) {
+    // модель и настройки нарезки — по ним kika run и окно получат ту же сетку и те же грани
+    j["model"] = ss(gcode_name);
+    j["print"] = slicer::print_to_json(source_->print);
+  }
   if (!job_subtitle_.empty()) j["subtitle"] = job_subtitle_;
   return j;
 }
@@ -2005,8 +2364,11 @@ json::Value MainWindow::job_json(const QString& gcode_name) const {
 // ============================================================================ действия
 
 void MainWindow::open_gcode_dialog() {
-  const QString f = QFileDialog::getOpenFileName(this, "Открыть G-code", last_dir_,
-                                                 "G-code (*.gcode *.gco *.g *.txt *.bgcode);;Все файлы (*)");
+  const QString models = geometry::step_supported() ? "*.stl *.3mf *.step *.stp" : "*.stl *.3mf";
+  const QString f = QFileDialog::getOpenFileName(
+      this, "Открыть модель или G-code", last_dir_,
+      "Модели и G-code (" + models + " *.gcode *.gco *.g *.bgcode);;Модели (" + models +
+          ");;G-code (*.gcode *.gco *.g *.gcode.3mf *.txt *.bgcode);;Все файлы (*)");
   if (!f.isEmpty()) open_paths({f});
 }
 
@@ -2103,6 +2465,19 @@ void MainWindow::about() {
 
 void MainWindow::rebuild_mesh() {
   if (!model_ || busy_) return;
+  if (source_) {
+    // модель уже нарезана — та же нарезка, другая расчётная сетка
+    LoadPlan plan;
+    plan.path = gcode_path_;
+    plan.max_elems = kDetail[detail_].n;
+    plan.keep_job = true;
+    plan.model = true;
+    plan.mesh = source_->mesh;
+    plan.print = source_->print;
+    plan.gcode = source_->gcode;
+    start_load(std::move(plan));
+    return;
+  }
   load_model(gcode_path_, kDetail[detail_].n, true);
 }
 
@@ -2183,6 +2558,16 @@ void MainWindow::continue_script() {
     open_example();
     if (busy_) return;
   }
+  if (!script_.rotate.empty()) {
+    for (const int axis : script_.rotate) rotate_part(axis);
+    script_.rotate.clear();
+    if (source_) {
+      reslice();
+      if (busy_) return;
+    } else {
+      toast("Поворачивать можно только модель (STL, 3MF), не G-code.", true);
+    }
+  }
   if (script_.run) {
     script_.run = false;
     if (model_ && app::can_run(job_)) {
@@ -2217,6 +2602,12 @@ void MainWindow::continue_script() {
   }
   for (const auto& [fx, fy] : script_.picks) viewer_->click_at(fx, fy, Qt::ShiftModifier);
   if (!script_.save_job.isEmpty() && model_) save_job_to(script_.save_job);
+  if (!script_.save_gcode.isEmpty()) {
+    if (source_)
+      save_gcode(script_.save_gcode);
+    else
+      toast("Сохранить G-code можно только для модели, нарезанной здесь.", true);
+  }
   if (!script_.report.isEmpty() && results_) {
     try {
       report::ReportInfo info;
