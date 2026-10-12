@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 
 namespace kika::app {
@@ -434,10 +436,54 @@ UiJob from_job_json(const json::Value& job, const analysis::Model& model, std::v
   return out;
 }
 
+namespace {
+
+// Перенос граней на другую сетку. map переводит точку на грани старой сетки в точку на новой
+// (пусто — не переводится), unmap — обратно. Переносится в обе стороны: центры выбранных граней
+// попадают в грани новой сетки (на более грубой сетке выбор не пропадает), а грани новой сетки,
+// чей центр лежит на выбранных, добавляются (на более подробной не теряется площадь).
+class FaceMover {
+ public:
+  using Map = std::function<std::optional<FacePoint>(const FacePoint&)>;
+
+  FaceMover(const Scene& from, const Scene& to, Map map, const Map& unmap)
+      : from_(from), to_(to), map_(std::move(map)), to_keys_(to.boundary_keys()) {
+    under_.assign(to_keys_.size(), -1);
+    for (std::size_t i = 0; i < to_keys_.size(); ++i)
+      if (const auto p = to.point_of(to_keys_[i]))
+        if (const auto q = unmap(*p)) under_[i] = from.face_at(*q);
+  }
+
+  std::vector<std::int64_t> operator()(std::vector<std::int64_t> keys) const {
+    if (keys.empty()) return keys;
+    std::vector<FacePoint> pts;
+    for (const auto& fp : from_.to_points(keys))
+      if (const auto q = map_(fp)) pts.push_back(*q);
+    auto out = to_.from_points(pts);
+    std::sort(keys.begin(), keys.end());
+    for (std::size_t i = 0; i < to_keys_.size(); ++i)
+      if (under_[i] >= 0 && std::binary_search(keys.begin(), keys.end(), under_[i])) out.push_back(to_keys_[i]);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+  }
+
+ private:
+  const Scene& from_;
+  const Scene& to_;
+  Map map_;
+  std::vector<std::int64_t> to_keys_;
+  std::vector<std::int64_t> under_;  // грань старой сетки под центром каждой грани новой (−1 — нет)
+};
+
+}  // namespace
+
 void remap_faces(UiJob& job, const Scene& from, const Scene& to) {
-  for (auto& f : job.fixtures) f.faces = to.from_points(from.to_points(f.faces));
+  const auto same = [](const FacePoint& p) -> std::optional<FacePoint> { return p; };
+  const FaceMover move(from, to, same, same);
+  for (auto& f : job.fixtures) f.faces = move(f.faces);
   for (auto& c : job.cases)
-    for (auto& l : c.loads) l.faces = to.from_points(from.to_points(l.faces));
+    for (auto& l : c.loads) l.faces = move(l.faces);
 }
 
 void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& r) {
@@ -464,18 +510,30 @@ void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array
     const Vec3 q = mul({(c & 1) ? s[0] : 0.0, (c & 2) ? s[1] : 0.0, (c & 4) ? s[2] : 0.0});
     for (std::size_t a = 0; a < 3; ++a) lo[a] = std::min(lo[a], q[a]);
   }
-  auto move = [&](const std::vector<std::int64_t>& keys) {
-    std::vector<FacePoint> pts;
-    for (const auto& fp : from.to_points(keys)) {
-      Vec3 n{0, 0, 0};
-      n[static_cast<std::size_t>(fp.dir >> 1)] = (fp.dir & 1) ? 1.0 : -1.0;
-      const auto ax = axis_of(mul(n));
-      if (!ax) continue;
-      const Vec3 q = mul(fp.p);
-      pts.push_back({{q[0] - lo[0], q[1] - lo[1], q[2] - lo[2]}, ax->first * 2 + (ax->second > 0 ? 1 : 0)});
-    }
-    return to.from_points(pts);
+  const auto mul_t = [&](const Vec3& v) {  // обратный поворот — транспонированный
+    return Vec3{r[0] * v[0] + r[3] * v[1] + r[6] * v[2], r[1] * v[0] + r[4] * v[1] + r[7] * v[2],
+                r[2] * v[0] + r[5] * v[1] + r[8] * v[2]};
   };
+  const auto dir_of = [&](int dir, bool back) -> std::optional<int> {
+    Vec3 n{0, 0, 0};
+    n[static_cast<std::size_t>(dir >> 1)] = (dir & 1) ? 1.0 : -1.0;
+    const auto ax = axis_of(back ? mul_t(n) : mul(n));
+    if (!ax) return std::nullopt;
+    return ax->first * 2 + (ax->second > 0 ? 1 : 0);
+  };
+  const FaceMover move(
+      from, to,
+      [&](const FacePoint& fp) -> std::optional<FacePoint> {
+        const auto d = dir_of(fp.dir, false);
+        if (!d) return std::nullopt;
+        const Vec3 q = mul(fp.p);
+        return FacePoint{{q[0] - lo[0], q[1] - lo[1], q[2] - lo[2]}, *d};
+      },
+      [&](const FacePoint& fp) -> std::optional<FacePoint> {
+        const auto d = dir_of(fp.dir, true);
+        if (!d) return std::nullopt;
+        return FacePoint{mul_t({fp.p[0] + lo[0], fp.p[1] + lo[1], fp.p[2] + lo[2]}), *d};
+      });
   // направление "+x"… поворачивается в другую ось; не по оси — в свой вектор
   auto turn_key = [&](std::string& key, Vec3& vec) {
     if (key.size() != 2 || (key[0] != '+' && key[0] != '-') || key[1] < 'x' || key[1] > 'z') return;  // normal_in…

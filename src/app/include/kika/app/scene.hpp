@@ -148,9 +148,15 @@ class Scene {
   std::optional<Vec3> center(const std::vector<std::int64_t>& keys, double deform) const;
   Vec3 normal_sum(const std::vector<std::int64_t>& keys) const;
 
-  // Перенос выбора между сетками разной детальности.
+  // Перенос выбора между сетками разной детальности: центры граней и грани в точках.
   std::vector<FacePoint> to_points(const std::vector<std::int64_t>& keys) const;
   std::vector<std::int64_t> from_points(const std::vector<FacePoint>& points) const;
+  std::optional<FacePoint> point_of(std::int64_t key) const;
+  // Грань на поверхности детали в точке с нормалью point.dir (ищется и в соседних ячейках
+  // по нормали); −1 — такой нет.
+  std::int64_t face_at(const FacePoint& point) const;
+  // Все грани на поверхности детали, ключи по возрастанию.
+  std::vector<std::int64_t> boundary_keys() const;
 
   // Ближайшая видимая грань на луче (система детали).
   std::optional<Hit> pick(const Vec3& origin, const Vec3& dir, double deform) const;

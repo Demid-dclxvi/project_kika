@@ -183,6 +183,20 @@ TEST_CASE("Выбор переносится на сетку другой дет
   const auto moved = s2.from_points(s1.to_points(end));
   REQUIRE(!moved.empty());
   for (auto k : moved) REQUIRE(k % 6 == 1);
+
+  // задание целиком: на более подробную сетку и обратно площадь выбора не теряется
+  auto job = kika::app::new_job();
+  kika::app::UiFixture fx;
+  fx.id = job.new_id();
+  fx.faces = end;
+  job.fixtures.push_back(fx);
+  auto fine = job;
+  kika::app::remap_faces(fine, s1, s2);
+  CHECK(jaccard(fine.fixtures[0].faces, s2.side(1)) > 0.95);
+  CHECK_THAT(s2.area(fine.fixtures[0].faces), WithinRel(s1.area(end), 0.1));
+  auto back = fine;
+  kika::app::remap_faces(back, s2, s1);
+  CHECK(jaccard(back.fixtures[0].faces, end) > 0.95);
 }
 
 TEST_CASE("Поворот детали на столе: закрепления и нагрузки поворачиваются вместе с ней", "[app]") {
@@ -214,6 +228,17 @@ TEST_CASE("Поворот детали на столе: закрепления �
   job.cases[0].loads.push_back(mo);
 
   const std::array<double, 9> ry{0, 0, -1, 0, 1, 0, 1, 0, 0};  // x' = −z, z' = x
+  // и на более подробную сетку повёрнутой детали: площадь закрепления та же
+  {
+    o.voxel = 1.0;
+    const auto up_fine = kika::analysis::build_model(
+        kika::gcode::load(fs::path(KIKA_SOURCE_DIR) / "tests" / "data" / "cantilever_upright.gcode"), o);
+    const Scene s3(up_fine);
+    auto j3 = job;
+    kika::app::rotate_job(j3, s1, s3, ry);
+    CHECK(jaccard(j3.fixtures[0].faces, s3.side(4)) > 0.95);
+    CHECK_THAT(s3.area(j3.fixtures[0].faces), WithinRel(s1.area(job.fixtures[0].faces), 0.15));
+  }
   kika::app::rotate_job(job, s1, s2, ry);
   CHECK(kika::app::can_run(job));
   CHECK(jaccard(job.fixtures[0].faces, s2.side(4)) > 0.95);  // торец −Z: стоит на нём

@@ -502,29 +502,33 @@ Vec3 Scene::normal_sum(const std::vector<std::int64_t>& keys) const {
   return n;
 }
 
-std::vector<FacePoint> Scene::to_points(const std::vector<std::int64_t>& keys) const {
+std::optional<FacePoint> Scene::point_of(std::int64_t k) const {
   const auto& vm = model_->vm;
   const Vec3 o = model_->origin;
-  std::vector<FacePoint> out;
-  out.reserve(keys.size());
-  for (auto k : keys) {
-    const std::int64_t fl = k / 6;
-    const int d = static_cast<int>(k % 6);
-    const std::int64_t ix = fl % vm.nx, iy = (fl / vm.nx) % vm.ny, iz = fl / (static_cast<std::int64_t>(vm.nx) * vm.ny);
-    if (iz + 1 >= static_cast<std::int64_t>(vm.z_edges.size())) continue;
-    const double z0 = vm.z_edges[static_cast<std::size_t>(iz)], z1 = vm.z_edges[static_cast<std::size_t>(iz + 1)];
-    out.push_back({{vm.x0 + (static_cast<double>(ix) + 0.5 + kDirs[d][0] / 2.0) * vm.sx - o[0],
+  const std::int64_t fl = k / 6;
+  const int d = static_cast<int>(k % 6);
+  const std::int64_t ix = fl % vm.nx, iy = (fl / vm.nx) % vm.ny, iz = fl / (static_cast<std::int64_t>(vm.nx) * vm.ny);
+  if (iz + 1 >= static_cast<std::int64_t>(vm.z_edges.size())) return std::nullopt;
+  const double z0 = vm.z_edges[static_cast<std::size_t>(iz)], z1 = vm.z_edges[static_cast<std::size_t>(iz + 1)];
+  return FacePoint{{vm.x0 + (static_cast<double>(ix) + 0.5 + kDirs[d][0] / 2.0) * vm.sx - o[0],
                     vm.y0 + (static_cast<double>(iy) + 0.5 + kDirs[d][1] / 2.0) * vm.sy - o[1],
                     0.5 * (z0 + z1) + kDirs[d][2] * (z1 - z0) / 2 - o[2]},
-                   d});
-  }
+                   d};
+}
+
+std::vector<FacePoint> Scene::to_points(const std::vector<std::int64_t>& keys) const {
+  std::vector<FacePoint> out;
+  out.reserve(keys.size());
+  for (auto k : keys)
+    if (const auto p = point_of(k)) out.push_back(*p);
   return out;
 }
 
-std::vector<std::int64_t> Scene::from_points(const std::vector<FacePoint>& points) const {
+std::int64_t Scene::face_at(const FacePoint& pt) const {
   const auto& vm = model_->vm;
   const Vec3 o = model_->origin;
   const auto& ze = vm.z_edges;
+  if (ze.size() < 2 || pt.dir < 0 || pt.dir > 5) return -1;
   auto z_index = [&](double z) {
     std::size_t lo = 0, hi = ze.size() - 2;
     while (lo < hi) {
@@ -536,32 +540,41 @@ std::vector<std::int64_t> Scene::from_points(const std::vector<FacePoint>& point
     }
     return static_cast<std::int64_t>(lo);
   };
-  std::vector<std::int64_t> out;
   constexpr double eps = 1e-3;
-  for (const auto& pt : points) {
-    const int d = pt.dir;
-    const auto a = static_cast<std::size_t>(d >> 1);
-    const double sg = (d & 1) ? 1.0 : -1.0;
-    // точка на грани; чуть-чуть сдвигаем внутрь детали (против нормали)
-    Vec3 q{pt.p[0] + o[0], pt.p[1] + o[1], pt.p[2] + o[2]};
-    q[a] -= sg * eps;
-    const std::array<std::int64_t, 3> base{static_cast<std::int64_t>(std::floor((q[0] - vm.x0) / vm.sx)),
-                                           static_cast<std::int64_t>(std::floor((q[1] - vm.y0) / vm.sy)),
-                                           z_index(q[2])};
-    for (int t : {0, 1, -1, 2, -2}) {
-      auto c = base;
-      c[a] += t;
-      if (c[0] < 0 || c[1] < 0 || c[2] < 0 || c[0] >= vm.nx || c[1] >= vm.ny || c[2] >= vm.nz) continue;
-      const std::int64_t fl = (c[2] * vm.ny + c[1]) * vm.nx + c[0];
-      const auto it = std::lower_bound(flat_.begin(), flat_.end(), fl);
-      if (it == flat_.end() || *it != fl) continue;
-      const auto e = static_cast<std::size_t>(it - flat_.begin());
-      if (boundary(e, d)) {
-        out.push_back(key(e, d));
-        break;
-      }
-    }
+  const int d = pt.dir;
+  const auto a = static_cast<std::size_t>(d >> 1);
+  const double sg = (d & 1) ? 1.0 : -1.0;
+  // точка на грани; чуть-чуть сдвигаем внутрь детали (против нормали)
+  Vec3 q{pt.p[0] + o[0], pt.p[1] + o[1], pt.p[2] + o[2]};
+  q[a] -= sg * eps;
+  const std::array<std::int64_t, 3> base{static_cast<std::int64_t>(std::floor((q[0] - vm.x0) / vm.sx)),
+                                         static_cast<std::int64_t>(std::floor((q[1] - vm.y0) / vm.sy)),
+                                         z_index(q[2])};
+  for (int t : {0, 1, -1, 2, -2}) {
+    auto c = base;
+    c[a] += t;
+    if (c[0] < 0 || c[1] < 0 || c[2] < 0 || c[0] >= vm.nx || c[1] >= vm.ny || c[2] >= vm.nz) continue;
+    const std::int64_t fl = (c[2] * vm.ny + c[1]) * vm.nx + c[0];
+    const auto it = std::lower_bound(flat_.begin(), flat_.end(), fl);
+    if (it == flat_.end() || *it != fl) continue;
+    const auto e = static_cast<std::size_t>(it - flat_.begin());
+    if (boundary(e, d)) return key(e, d);
   }
+  return -1;
+}
+
+std::vector<std::int64_t> Scene::from_points(const std::vector<FacePoint>& points) const {
+  std::vector<std::int64_t> out;
+  for (const auto& pt : points)
+    if (const auto k = face_at(pt); k >= 0) out.push_back(k);
+  return sorted_unique(std::move(out));
+}
+
+std::vector<std::int64_t> Scene::boundary_keys() const {
+  std::vector<std::int64_t> out;
+  for (std::size_t e = 0; e < ix_.size(); ++e)
+    for (int d = 0; d < 6; ++d)
+      if (boundary(e, d)) out.push_back(key(e, d));
   return sorted_unique(std::move(out));
 }
 
