@@ -164,6 +164,11 @@ void usage() {
                "  --report ФАЙЛ.html   сохранить отчёт\n"
                "  --save-job ФАЙЛ.json сохранить задание\n"
                "  --save-gcode ФАЙЛ    сохранить G-code своей нарезки модели\n"
+               "  --settings-shot ФАЙЛ снимок окна всех настроек печати\n"
+               "  --printer АДРЕС      подключиться к принтеру (Moonraker)\n"
+               "  --send               отправить G-code на принтер без запуска\n"
+               "  --send-print         отправить и начать печать (без подтверждения!)\n"
+               "  --printer-shot ФАЙЛ  снимок окна принтера\n"
                "  --screenshot ФАЙЛ    снимок окна и выход (код 1, если были ошибки)\n"
                "  --size ШxВ           размер окна\n";
 }
@@ -293,6 +298,19 @@ int main(int argc, char** argv) {
       scripted = true;
     } else if (a == "--save-job") {
       script.save_job = next();
+      scripted = true;
+    } else if (a == "--settings-shot") {
+      script.settings_shot = next();
+      scripted = true;
+    } else if (a == "--printer") {
+      script.printer = next();
+      scripted = true;
+    } else if (a == "--send") {
+      script.send = scripted = true;
+    } else if (a == "--send-print") {
+      script.send_print = scripted = true;
+    } else if (a == "--printer-shot") {
+      script.printer_shot = next();
       scripted = true;
     } else if (a == "--screenshot") {
       script.screenshot = next();

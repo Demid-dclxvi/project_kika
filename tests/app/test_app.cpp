@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -10,7 +11,9 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "kika/analysis/analysis.hpp"
+#include "kika/analysis/job.hpp"
 #include "kika/app/job_model.hpp"
+#include "kika/app/profile_store.hpp"
 #include "kika/app/scene.hpp"
 #include "kika/gcode/parser.hpp"
 #include "kika/util/json.hpp"
@@ -329,4 +332,52 @@ TEST_CASE("Числа для подписей", "[app]") {
   CHECK(kika::app::fmt(0.1234) == "0,123");
   CHECK(kika::app::fmt(-0.0001, 1) == "0,0");
   CHECK(kika::app::fmt(2.0, 1) == "2,0");
+}
+
+TEST_CASE("Свои профили: сохранить, найти, загрузить, удалить", "[app][profiles]") {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "kika_profiles_test";
+  fs::remove_all(dir);
+#ifdef _WIN32
+  _wputenv_s(L"KIKA_CONFIG_DIR", dir.wstring().c_str());
+#else
+  setenv("KIKA_CONFIG_DIR", dir.string().c_str(), 1);
+#endif
+  using kika::slicer::Section;
+  CHECK(kika::app::config_dir() == dir);
+  CHECK(kika::app::list_profiles(Section::Filament).empty());
+  kika::slicer::Settings s;
+  s.filament = kika::slicer::filament_preset("PETG");
+  s.filament.nozzle_temp = 250;
+  s.filament.cost = 1500;
+  const auto path = kika::app::save_profile(Section::Filament, "Мой PETG: чёрный", s);
+  CHECK(fs::exists(path));
+  CHECK(path.filename().u8string() == u8"Мой PETG_ чёрный.json");
+  s.printer.z_hop = 0.2;
+  kika::app::save_profile(Section::Printer, "Q2 дома", s);
+  s.speed_outer_wall = 120;
+  kika::app::save_profile(Section::Process, "Аккуратно", s);
+  const auto fl = kika::app::list_profiles(Section::Filament);
+  REQUIRE(fl.size() == 1);
+  CHECK(fl[0].name == "Мой PETG: чёрный");
+  // загрузка в чистые настройки: тип и отличия на месте, остальное — как у встроенного PETG
+  kika::slicer::Settings t;
+  t.filament = kika::slicer::filament_preset("PLA");
+  kika::app::load_profile(Section::Filament, fl[0].path, t);
+  CHECK(t.filament.type == "PETG");
+  CHECK(t.filament.name == "Мой PETG: чёрный");
+  CHECK(t.filament.nozzle_temp == 250);
+  CHECK(t.filament.cost == 1500);
+  CHECK(t.filament.bed_temp == kika::slicer::filament_preset("PETG").bed_temp);
+  kika::app::load_profile(Section::Printer, kika::app::list_profiles(Section::Printer)[0].path, t);
+  CHECK(t.printer.key == "qidi_q2");
+  CHECK(t.printer.name == "Q2 дома");
+  CHECK(t.printer.z_hop == 0.2);
+  kika::app::load_profile(Section::Process, kika::app::list_profiles(Section::Process)[0].path, t);
+  CHECK(t.speed_outer_wall == 120);
+  // профиль другого раздела — ошибка, не тихая порча
+  CHECK_THROWS_AS(kika::app::load_profile(Section::Printer, fl[0].path, t), kika::analysis::JobError);
+  kika::app::delete_profile(fl[0].path);
+  CHECK(kika::app::list_profiles(Section::Filament).empty());
+  fs::remove_all(dir);
 }

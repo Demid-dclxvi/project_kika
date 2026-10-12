@@ -54,7 +54,11 @@
 #include "kika/material/material.hpp"
 #include "kika/report/report.hpp"
 #include "kika/version.hpp"
+#include "kika/app/profile_store.hpp"
+#include "printer_dialog.hpp"
+#include "settings_dialog.hpp"
 #include "viewer.hpp"
+#include "widgets.hpp"
 
 namespace kika::gui {
 
@@ -144,252 +148,6 @@ std::optional<double> material_prop(const material::Material& m, const std::stri
 
 // Отмена фоновой работы при закрытии окна.
 struct Cancelled {};
-
-QString qs(const std::string& s) { return QString::fromStdString(s); }
-std::string ss(const QString& s) { return s.toStdString(); }
-QString esc(const std::string& s) { return qs(s).toHtmlEscaped(); }
-QString fmtq(double v, int d = -1) { return qs(app::fmt(v, d)); }
-
-std::filesystem::path to_path(const QString& s) {
-#ifdef _WIN32
-  return std::filesystem::path(s.toStdWString());
-#else
-  return std::filesystem::path(s.toStdString());
-#endif
-}
-
-// Число из поля ввода: запятая или точка, пробелы между разрядами допустимы.
-std::optional<double> parse_num(const QString& text) {
-  QString t = text.trimmed();
-  t.remove(QChar(' '));
-  t.remove(QChar(0x00A0));
-  t.remove(QChar(0x202F));
-  t.replace(QChar(','), QChar('.'));
-  t.replace(QChar(0x2212), QChar('-'));  // «−» из подписей
-  if (t.isEmpty()) return std::nullopt;
-  bool ok = false;
-  const double v = t.toDouble(&ok);
-  if (!ok || !std::isfinite(v)) return std::nullopt;
-  return v;
-}
-
-QString num_text(double v) { return QString::number(v, 'g', 12).replace(QChar('.'), QChar(',')); }
-
-QString ru_int(long long n) { return QLocale(QLocale::Russian).toString(n); }
-
-void repolish(QWidget* w) {
-  w->style()->unpolish(w);
-  w->style()->polish(w);
-  w->update();
-}
-
-void set_bad(QWidget* w, bool bad) {
-  if (w->property("bad").toBool() == bad) return;
-  w->setProperty("bad", bad);
-  repolish(w);
-}
-
-// Удалить всё из раскладки. Виджеты удаляются позже (может идти обработка их же сигнала),
-// а сигналы глушатся сразу, чтобы скрытие не вызвало повторной обработки.
-void clear_layout(QLayout* l) {
-  while (QLayoutItem* it = l->takeAt(0)) {
-    if (QWidget* w = it->widget()) {
-      w->blockSignals(true);
-      for (QObject* c : w->findChildren<QObject*>()) c->blockSignals(true);
-      w->hide();
-      w->deleteLater();
-      delete it;
-    } else if (QLayout* sub = it->layout()) {
-      clear_layout(sub);
-      delete sub;
-    } else {
-      delete it;
-    }
-  }
-}
-
-// Колесо мыши не меняет значение, пока поле не в фокусе: иначе прокрутка панели
-// случайно переключает материал или направление.
-template <class W>
-class Calm : public W {
- public:
-  explicit Calm(QWidget* parent = nullptr) : W(parent) { this->setFocusPolicy(Qt::StrongFocus); }
-
- protected:
-  void wheelEvent(QWheelEvent* e) override {
-    if (this->hasFocus())
-      W::wheelEvent(e);
-    else
-      e->ignore();
-  }
-};
-
-// Список, который сжимается вместе с панелью (иначе его ширина — по самому длинному пункту).
-// Стрелка рисуется здесь: таблица стилей задаёт рамку списка, а стрелку без картинки задать нельзя.
-class Combo : public Calm<QComboBox> {
- public:
-  Combo() {
-    setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    setMinimumContentsLength(4);
-  }
-
- protected:
-  void paintEvent(QPaintEvent* e) override {
-    Calm<QComboBox>::paintEvent(e);
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(isEnabled() ? QColor(0x61, 0x64, 0x6b) : QColor(0xb9, 0xba, 0xb6), 1.6, Qt::SolidLine, Qt::RoundCap,
-                  Qt::RoundJoin));
-    const QPointF c(width() - 12.5, height() / 2.0 + 0.5);
-    p.drawPolyline(QPolygonF({c + QPointF(-4, -2), c + QPointF(0, 2), c + QPointF(4, -2)}));
-  }
-};
-
-class Slider : public Calm<QSlider> {
- public:
-  Slider(int lo, int hi, int value) {
-    setOrientation(Qt::Horizontal);
-    setRange(lo, hi);
-    setValue(value);
-  }
-};
-
-// Рамка с обратными вызовами наведения и щелчка.
-class Frame : public QFrame {
- public:
-  explicit Frame(const char* name) { setObjectName(name); }
-  std::function<void(bool)> on_hover;
-  std::function<void()> on_click;
-
- protected:
-  void enterEvent(QEnterEvent* e) override {
-    if (on_hover) on_hover(true);
-    QFrame::enterEvent(e);
-  }
-  void leaveEvent(QEvent* e) override {
-    if (on_hover) on_hover(false);
-    QFrame::leaveEvent(e);
-  }
-  void mousePressEvent(QMouseEvent* e) override {
-    QFrame::mousePressEvent(e);
-    if (on_click && e->button() == Qt::LeftButton) on_click();
-  }
-};
-
-QLabel* make_label(const QString& text, const char* name = nullptr, bool wrap = true) {
-  auto* l = new QLabel(text);
-  if (name) l->setObjectName(name);
-  l->setWordWrap(wrap);
-  return l;
-}
-
-QLabel* make_hint(const QString& text) { return make_label(text, "hint"); }
-QLabel* make_warn(const QString& text) { return make_label(text, "warn"); }
-
-QPushButton* make_button(const QString& text, const char* cls = nullptr) {
-  auto* b = new QPushButton(text);
-  if (cls) b->setProperty("cls", cls);
-  b->setCursor(Qt::PointingHandCursor);
-  return b;
-}
-
-QPushButton* make_icon_button(const QString& text, const QString& tip) {
-  auto* b = make_button(text, "icon");
-  b->setToolTip(tip);
-  b->setFocusPolicy(Qt::TabFocus);
-  return b;
-}
-
-QLabel* make_dot(const app::Rgb& c) {
-  auto* d = new QLabel;
-  d->setFixedSize(10, 10);
-  d->setStyleSheet(QString("background:%1;border-radius:3px;").arg(QColor::fromRgbF(c[0], c[1], c[2]).name()));
-  return d;
-}
-
-// Поле: подпись сверху, ввод снизу.
-QWidget* make_field(const QString& title, QWidget* input) {
-  auto* w = new QWidget;
-  auto* v = new QVBoxLayout(w);
-  v->setContentsMargins(0, 0, 0, 0);
-  v->setSpacing(4);
-  v->addWidget(make_label(title, "fieldLabel"));
-  v->addWidget(input);
-  return w;
-}
-
-QLineEdit* make_num(std::optional<double> v) {
-  auto* e = new QLineEdit(v ? num_text(*v) : QString());
-  e->setObjectName("num");
-  e->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-  return e;
-}
-
-Combo* make_combo(const std::vector<std::pair<const char*, const char*>>& items, const std::string& cur) {
-  auto* c = new Combo;
-  for (const auto& [key, name] : items) c->addItem(QString::fromUtf8(name), QString::fromUtf8(key));
-  const int i = c->findData(qs(cur));
-  if (i >= 0) c->setCurrentIndex(i);
-  return c;
-}
-
-std::string combo_key(const QComboBox* c) { return ss(c->currentData().toString()); }
-
-QFrame* make_step() {
-  auto* f = new QFrame;
-  f->setObjectName("step");
-  auto* v = new QVBoxLayout(f);
-  v->setContentsMargins(16, 14, 16, 14);
-  v->setSpacing(10);
-  return f;
-}
-
-QWidget* make_step_title(const QString& n, const QString& text) {
-  auto* w = new QWidget;
-  auto* h = new QHBoxLayout(w);
-  h->setContentsMargins(0, 0, 0, 0);
-  h->setSpacing(9);
-  if (!n.isEmpty()) {
-    auto* num = new QLabel(n);
-    num->setObjectName("stepNum");
-    num->setAlignment(Qt::AlignCenter);
-    num->setFixedSize(20, 20);
-    h->addWidget(num);
-  }
-  h->addWidget(make_label(text, "stepTitle", false));
-  h->addStretch();
-  return w;
-}
-
-QHBoxLayout* hbox(int spacing = 8) {
-  auto* h = new QHBoxLayout;
-  h->setContentsMargins(0, 0, 0, 0);
-  h->setSpacing(spacing);
-  return h;
-}
-
-QWidget* wrap_layout(QLayout* l) {
-  auto* w = new QWidget;
-  w->setLayout(l);
-  return w;
-}
-
-// Сегментированная группа кнопок.
-QFrame* make_seg(QHBoxLayout** layout) {
-  auto* f = new QFrame;
-  f->setObjectName("seg");
-  auto* h = new QHBoxLayout(f);
-  h->setContentsMargins(3, 3, 3, 3);
-  h->setSpacing(2);
-  *layout = h;
-  return f;
-}
-
-QPushButton* make_seg_button(const QString& text) {
-  auto* b = make_button(text, "seg");
-  b->setCheckable(true);
-  return b;
-}
 
 // Таблица «название — значение» для сводок.
 QString kv_table(const std::vector<std::pair<QString, QString>>& rows) {
@@ -565,11 +323,13 @@ QWidget* MainWindow::build_top_bar() {
   btn_report_ = make_button("Отчёт");
   btn_save_gcode_ = make_button("Сохранить G-code");
   btn_save_gcode_->setToolTip("G-code своей нарезки — для печати");
+  btn_printer_ = make_button("Принтер");
+  btn_printer_->setToolTip("Принтер по сети (Klipper, Moonraker): состояние, отправка G-code и запуск печати");
   auto* btn_about = make_button("О программе");
   btn_example_->setToolTip("Настенный кронштейн для лампы, напечатанный на боку, с готовым заданием");
   btn_open_job_->setToolTip("Задание на расчёт (.json): закрепления, нагрузки, материал");
   btn_report_->setToolTip("Отчёт с 3D-видом в одном файле HTML — открывается в любом браузере");
-  for (auto* b : {btn_open_, btn_example_, btn_open_job_, btn_save_job_, btn_save_gcode_, btn_report_, btn_about})
+  for (auto* b : {btn_open_, btn_example_, btn_open_job_, btn_save_job_, btn_save_gcode_, btn_report_, btn_printer_, btn_about})
     h->addWidget(b);
   connect(btn_open_, &QPushButton::clicked, this, [this] { open_gcode_dialog(); });
   connect(btn_example_, &QPushButton::clicked, this, [this] { open_example(); });
@@ -577,6 +337,7 @@ QWidget* MainWindow::build_top_bar() {
   connect(btn_save_job_, &QPushButton::clicked, this, [this] { save_job(); });
   connect(btn_report_, &QPushButton::clicked, this, [this] { export_report(); });
   connect(btn_save_gcode_, &QPushButton::clicked, this, [this] { save_gcode(); });
+  connect(btn_printer_, &QPushButton::clicked, this, [this] { open_printer(); });
   connect(btn_about, &QPushButton::clicked, this, [this] { about(); });
   return bar;
 }
@@ -635,8 +396,15 @@ QWidget* MainWindow::build_panel() {
     pb->setSpacing(8);
     pb->addWidget(make_label("Настройки печати", "itemTitle", false));
     printer_combo_ = new Combo;
-    for (const auto& pr : slicer::printers()) printer_combo_->addItem(qs(pr.name), qs(pr.key));
-    pb->addWidget(make_field("Принтер", printer_combo_));
+    {
+      auto* prow = hbox(8);
+      prow->addWidget(printer_combo_, 1);
+      auto* all = make_button("Все настройки…", "sm");
+      all->setToolTip("Принтер, пластик, скорости, ускорения, обдув, кайма, шов, поддержки — и свои профили");
+      connect(all, &QPushButton::clicked, this, [this] { open_settings(slicer::Section::Process); });
+      prow->addWidget(all);
+      pb->addWidget(make_field("Принтер", wrap_layout(prow)));
+    }
     auto* pg = new QGridLayout;
     pg->setHorizontalSpacing(8);
     pg->setVerticalSpacing(8);
@@ -762,6 +530,12 @@ QWidget* MainWindow::build_panel() {
     l->addLayout(row);
     mat_note_ = make_hint("");
     l->addWidget(mat_note_);
+    {
+      auto* fil = make_button("Как печатать этот пластик…", "link");
+      fil->setToolTip("Температуры, обдув, расход, откат — для G-code своей нарезки");
+      connect(fil, &QPushButton::clicked, this, [this] { open_settings(slicer::Section::Filament); });
+      l->addWidget(fil, 0, Qt::AlignLeft);
+    }
     auto* toggle = make_button("▸ Свойства материала", "link");
     toggle->setCheckable(true);
     l->addWidget(toggle, 0, Qt::AlignLeft);
@@ -1132,9 +906,8 @@ void MainWindow::render_print_settings() {
   if (!source_) return;
   const auto& s = print_ui_.settings;
   {
-    const QSignalBlocker b1(printer_combo_), b2(pattern_combo_);
-    const int pi = printer_combo_->findData(qs(s.printer.key));
-    printer_combo_->setCurrentIndex(pi >= 0 ? pi : 0);
+    fill_printer_combo();
+    const QSignalBlocker b2(pattern_combo_);
     const int qi = pattern_combo_->findData(qs(std::string(slicer::pattern_key(s.pattern))));
     pattern_combo_->setCurrentIndex(qi >= 0 ? qi : 0);
     const QSignalBlocker b3(support_combo_), b4(support_bed_);
@@ -1172,10 +945,17 @@ void MainWindow::render_print_settings() {
 
 void MainWindow::read_print_settings() {
   auto& s = print_ui_.settings;
-  if (const auto* pr = slicer::find_printer(combo_key(printer_combo_))) {
-    const auto fil = s.filament;
-    s.printer = *pr;
-    s.filament = fil;
+  {
+    const QString d = printer_combo_->currentData().toString();
+    if (d.startsWith("b:")) {
+      if (const auto* pr = slicer::find_printer(ss(d.mid(2)))) s.printer = *pr;
+    } else if (d.startsWith("u:")) {
+      try {
+        app::load_profile(slicer::Section::Printer, to_path(d.mid(2)), s);
+      } catch (const std::exception& e) {
+        toast(QString::fromUtf8(e.what()), true);
+      }
+    }
   }
   if (const auto pk = slicer::pattern_from_key(combo_key(pattern_combo_))) s.pattern = *pk;
   if (const auto sk = slicer::support_from_key(combo_key(support_combo_))) s.support = *sk;
@@ -1202,13 +982,14 @@ void MainWindow::update_print_state() {
   if (!btn_slice_) return;
   bool changed = false;
   if (source_) {
-    // пластик на нарезку не влияет (только температуры в G-code) — его не сравниваем
-    auto a = print_ui_, b = source_->print;
-    a.settings.filament = b.settings.filament;
-    changed = json::dump(slicer::print_to_json(a)) != json::dump(slicer::print_to_json(b));
+    // пластик тоже: от потока зависит, сколько пластика в детали
+    auto a = print_ui_;
+    a.settings.filament = job_filament();
+    changed = json::dump(slicer::print_to_json(a)) != json::dump(slicer::print_to_json(source_->print));
   }
   btn_slice_->setEnabled(changed && !busy_);
   btn_slice_->setText(changed ? "Нарезать заново" : "Нарезано");
+  update_printer_source();
 }
 
 void MainWindow::rotate_part(int axis) {
@@ -1227,7 +1008,7 @@ void MainWindow::reslice() {
   plan.model = true;
   plan.mesh = source_->mesh;
   plan.print = print_ui_;
-  plan.print.settings.filament = slicer::filament_preset(job_.material);
+  plan.print.settings.filament = job_filament();
   start_load(std::move(plan));
 }
 
@@ -1243,7 +1024,8 @@ void MainWindow::save_gcode(const QString& path) {
   }
   // нарезка та, что посчитана; пластик — из шага «Материал»
   auto print = source_->print;
-  print.settings.filament = slicer::filament_preset(job_.material);
+  print.settings.filament = job_filament();
+  print.settings.generated_at = slicer::now_stamp();
   const bool stale = btn_slice_ && btn_slice_->isEnabled();
   auto mesh = source_->mesh;
   auto work = [mesh, print, out]() {
@@ -1304,7 +1086,7 @@ void MainWindow::run_advisor() {
   auto model = model_;
   advisor::Request rq;
   rq.current = source_->print;
-  rq.current.settings.filament = slicer::filament_preset(job_.material);
+  rq.current.settings.filament = job_filament();
   rq.job = job_;
   rq.goals = goals();
   rq.max_elems = 20000;
@@ -2195,6 +1977,141 @@ void MainWindow::closeEvent(QCloseEvent* e) {
   e->accept();
 }
 
+// ============================================================================ настройки печати и принтер
+
+namespace {
+
+std::string upper(std::string s) {
+  for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
+}  // namespace
+
+slicer::Filament MainWindow::job_filament() const {
+  const auto& f = print_ui_.settings.filament;
+  if (upper(f.type) == upper(job_.material)) return f;
+  return slicer::filament_preset(job_.material);
+}
+
+void MainWindow::fill_printer_combo() {
+  if (!printer_combo_) return;
+  const QSignalBlocker block(printer_combo_);
+  printer_combo_->clear();
+  const auto& cur = print_ui_.settings;
+  const std::string now = json::dump(slicer::section_to_json(cur, slicer::Section::Printer));
+  int sel = -1;
+  for (const auto& p : slicer::printers()) {
+    printer_combo_->addItem(qs(p.name), "b:" + qs(p.key));
+    slicer::Settings t = cur;
+    t.printer = p;
+    if (sel < 0 && json::dump(slicer::section_to_json(t, slicer::Section::Printer)) == now) sel = printer_combo_->count() - 1;
+  }
+  for (const auto& p : app::list_profiles(slicer::Section::Printer)) {
+    printer_combo_->addItem(qs(p.name) + " (свой)", "u:" + to_qpath(p.path));
+    if (sel >= 0) continue;
+    try {
+      slicer::Settings t = cur;
+      app::load_profile(slicer::Section::Printer, p.path, t);
+      if (json::dump(slicer::section_to_json(t, slicer::Section::Printer)) == now) sel = printer_combo_->count() - 1;
+    } catch (const std::exception&) {
+    }
+  }
+  if (sel < 0) {
+    // изменённый в «Всех настройках», но не сохранённый в профиль
+    printer_combo_->addItem(qs(cur.printer.name) + " (изменён)", "c:");
+    sel = printer_combo_->count() - 1;
+  }
+  printer_combo_->setCurrentIndex(sel);
+}
+
+void MainWindow::open_settings(slicer::Section first) {
+  slicer::Settings s = print_ui_.settings;
+  s.filament = job_filament();
+  SettingsDialog dlg(s, first, this);
+  if (dlg.exec() != QDialog::Accepted) return;
+  apply_settings(dlg.settings());
+}
+
+void MainWindow::apply_settings(const slicer::Settings& s) {
+  print_ui_.settings = s;
+  // тип пластика в настройках печати и материал расчёта — одно и то же
+  if (upper(s.filament.type) != upper(job_.material)) {
+    if (const auto* m = material::find_material(s.filament.type)) {
+      job_.material = m->key;
+      job_.overrides.clear();
+      render_material();
+      mark_dirty();
+      toast("Материал для расчёта прочности — " + qs(m->name) + ", как пластик в настройках печати.");
+    } else {
+      print_ui_.settings.filament.type = job_.material;
+      toast("Пластика «" + qs(s.filament.type) + "» нет в базе материалов — для расчёта и в G-code остаётся тип " +
+            qs(job_.material) + ".", true);
+    }
+  }
+  render_print_settings();
+  update_print_state();
+}
+
+void MainWindow::open_printer() {
+  if (!printer_dlg_) printer_dlg_ = new PrinterDialog(this);
+  update_printer_source();
+  printer_dlg_->show();
+  printer_dlg_->raise();
+  printer_dlg_->activateWindow();
+}
+
+void MainWindow::update_printer_source() {
+  if (!printer_dlg_) return;
+  if (source_) {
+    auto mesh = source_->mesh;
+    auto print = source_->print;
+    print.settings.filament = job_filament();
+    const bool stale = btn_slice_ && btn_slice_->isEnabled();
+    const std::string name = ss(QFileInfo(gcode_path_).completeBaseName());
+    printer_dlg_->set_source(
+        [mesh, print, name, stale]() {
+          auto p = print;
+          p.settings.generated_at = slicer::now_stamp();
+          auto r = slicer::slice(slicer::placed(mesh->mesh, p), p.settings, {}, name);
+          const auto& f = p.settings.filament;
+          PrintPayload pl;
+          pl.name = name;
+          pl.for_klipper = p.settings.printer.flavor == slicer::Flavor::Klipper;
+          pl.printer_name = qs(p.settings.printer.name);
+          const int min = static_cast<int>(std::lround(r.print_time_s / 60));
+          pl.summary = QString("Пластик %1: сопло %2 °C, стол %3 °C%4.\nПринтер в настройках — %5. Печать ≈ %6, пластик %7 г.")
+                           .arg(qs(f.name), fmtq(f.first_layer_nozzle_temp, 0), fmtq(f.first_layer_bed_temp, 0),
+                                f.chamber_temp > 0 && p.settings.printer.max_chamber_temp > 0
+                                    ? QString(", камера %1 °C").arg(fmtq(std::min(f.chamber_temp, p.settings.printer.max_chamber_temp), 0))
+                                    : QString(),
+                                pl.printer_name,
+                                min >= 60 ? QString("%1 ч %2 мин").arg(min / 60).arg(min % 60) : QString("%1 мин").arg(std::max(1, min)),
+                                fmtq(r.filament_g, 0));
+          if (stale) pl.summary += "\nНастройки в панели изменены, но не применены — отправится прежняя нарезка.";
+          pl.gcode = std::move(r.gcode);
+          return pl;
+        },
+        "деталь «" + qs(name) + "», своя нарезка" + (stale ? QString(" (новые настройки ещё не применены)") : QString()));
+  } else if (model_ && !gcode_path_.isEmpty() && !gcode_path_.endsWith(".gcode.3mf", Qt::CaseInsensitive)) {
+    const auto path = to_path(gcode_path_);
+    const std::string name = ss(QFileInfo(gcode_path_).completeBaseName());
+    printer_dlg_->set_source(
+        [path, name]() {
+          std::ifstream f(path, std::ios::binary);
+          if (!f) throw std::runtime_error("Не удалось прочитать G-code.");
+          PrintPayload pl;
+          pl.name = name;
+          pl.gcode.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+          pl.summary = "Готовый G-code из файла — проверьте, что он нарезан для этого принтера и пластика.";
+          return pl;
+        },
+        "файл «" + QFileInfo(gcode_path_).fileName() + "»");
+  } else {
+    printer_dlg_->set_source({}, {});
+  }
+}
+
 // ============================================================================ модель и задание
 
 void MainWindow::load_model(const QString& path, long long max_elems, bool keep_job, std::function<void()> after) {
@@ -2211,7 +2128,7 @@ void MainWindow::load_model(const QString& path, long long max_elems, bool keep_
   plan.model = geometry::is_model_file(to_path(path)) && !path.endsWith(".gcode.3mf", Qt::CaseInsensitive);
   if (plan.model) {
     plan.print = print_ui_;
-    plan.print.settings.filament = slicer::filament_preset(job_.material);
+    plan.print.settings.filament = job_filament();
   }
   start_load(std::move(plan));
 }
@@ -2788,6 +2705,24 @@ void MainWindow::continue_script() {
       toast("Нечего считать: нужны деталь, закрепление и нагрузка.", true);
     }
   }
+  if (!script_.printer.isEmpty()) {
+    const QString addr = script_.printer;
+    script_.printer.clear();
+    open_printer();
+    printer_dlg_->run_script(addr, script_.send || script_.send_print, script_.send_print, [this](bool ok) {
+      if (!ok) {
+        had_error_ = true;
+        std::cerr << "kika-gui: принтер — не удалось" << std::endl;
+      }
+      if (!script_.printer_shot.isEmpty()) {
+        if (printer_dlg_->grab().save(script_.printer_shot))
+          std::cout << "снимок принтера: " << ss(script_.printer_shot) << std::endl;
+        script_.printer_shot.clear();
+      }
+      QTimer::singleShot(0, this, [this] { continue_script(); });
+    });
+    return;
+  }
   script_active_ = false;
   if (results_ && script_.result_case > 0) select_result(script_.result_case);
   if (!script_.field.empty()) {
@@ -2829,6 +2764,17 @@ void MainWindow::continue_script() {
     } catch (const std::exception& e) {
       toast(QString::fromUtf8(e.what()), true);
     }
+  }
+  if (!script_.settings_shot.isEmpty()) {
+    slicer::Settings st = print_ui_.settings;
+    st.filament = job_filament();
+    auto* dlg = new SettingsDialog(st, slicer::Section::Filament, this);
+    dlg->resize(700, 900);
+    dlg->show();
+    QCoreApplication::processEvents();
+    if (dlg->grab().save(script_.settings_shot)) std::cout << "снимок настроек: " << ss(script_.settings_shot) << std::endl;
+    dlg->close();
+    dlg->deleteLater();
   }
   if (script_.screenshot.isEmpty()) {
     QTimer::singleShot(0, this, [this] { QCoreApplication::exit(had_error_ ? 1 : 0); });

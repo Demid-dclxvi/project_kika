@@ -76,6 +76,7 @@ TEST_CASE("Слайсер: куб 20 мм — слои, роли, объём п�
   kika::slicer::Settings s;
   s.printer = *kika::slicer::find_printer("sparkx_i7");
   s.filament = kika::slicer::filament_preset("PETG");
+  s.filament.flow = 1.0;  // объём пластика — ровно по геометрии
   s.infill_density = 1.0;
   const auto r = kika::slicer::slice(m, s, {}, "куб");
   CHECK(r.layers == 100);
@@ -119,7 +120,7 @@ TEST_CASE("Слайсер: не помещается на стол, пласти
   auto m = box(300, 20, 5);
   kika::slicer::Settings s;
   s.filament = kika::slicer::filament_preset("PC");
-  s.filament.nozzle_temp = 320;
+  s.filament.nozzle_temp = 380;  // QIDI Q2 — до 370 °C
   const auto r = kika::slicer::slice(m, s);
   CHECK(r.warnings.size() == 2);
 }
@@ -135,6 +136,7 @@ TEST_CASE("Слайсер + расчёт: консольная балка по �
   m.transform(kika::geometry::place_on_bed(m, 130, 130));
   kika::slicer::Settings s;
   s.filament = kika::slicer::filament_preset("PLA");
+  s.filament.flow = 1.0;
   s.infill_density = 1.0;
   s.infill_angle = 0;  // все нити вдоль балки
   s.alternate_solid = false;
@@ -189,6 +191,7 @@ TEST_CASE("Слайсер: труба — отверстие обходится 
   CHECK(loop_area(sec[0]) * loop_area(sec[1]) < 0);  // контур и отверстие обходятся в разные стороны
   m.transform(kika::geometry::place_on_bed(m, 130, 130));
   kika::slicer::Settings s;
+  s.filament.flow = 1.0;
   s.infill_density = 1.0;
   const auto tp = kika::gcode::parse(kika::slicer::slice(m, s).gcode);
   CHECK_THAT(tp.total_volume(), WithinRel(m.volume(), 0.04));
@@ -203,7 +206,7 @@ TEST_CASE("Задание: настройки нарезки, поворот д�
   const auto pj = kika::slicer::print_from_json(
       nullptr, "PLA");
   CHECK(pj.settings.filament.type == "PLA");
-  CHECK(pj.settings.printer.key == "sparkx_i7");
+  CHECK(pj.settings.printer.key == "qidi_q2");  // принтер по умолчанию
   const auto j = kika::json::parse(R"({"filament": "PETG", "layer_height": 0.16, "walls": 3, "infill": 25,
       "pattern": "triangles", "rotate": [90, 0, 0], "skirt": false})");
   const auto p2 = kika::slicer::print_from_json(&j, "PLA");
@@ -231,7 +234,7 @@ TEST_CASE("Задание: настройки нарезки, поворот д�
   CHECK_THAT(sz[0], WithinAbs(100, 1e-9));
   CHECK_THAT(sz[1], WithinAbs(5, 1e-9));
   CHECK_THAT(sz[2], WithinAbs(10, 1e-9));
-  CHECK_THAT(on.bbox().center()[0], WithinAbs(130, 1e-9));
+  CHECK_THAT(on.bbox().center()[0], WithinAbs(p2.settings.printer.bed_x / 2, 1e-9));
   CHECK(on.bbox().min[2] == 0.0);
   // накопленные повороты по 90° раскладываются в углы X, Y, Z и обратно
   using kika::geometry::Transform;
@@ -258,6 +261,7 @@ TEST_CASE("Слайсер: L-кронштейн из 3MF в разных пол�
     kika::slicer::PrintJob p;
     p.rotate = rot;
     p.settings.infill_density = 1.0;
+    p.settings.filament.flow = 1.0;
     const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, p), p.settings, {}, "кронштейн");
     INFO("поворот " << rot[0] << ", " << rot[1] << ", " << rot[2]);
     for (const auto& w : r.warnings)

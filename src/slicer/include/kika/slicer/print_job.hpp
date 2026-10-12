@@ -3,14 +3,15 @@
 // поворот детали и постановка её в центр стола.
 //
 // "print": {
-//   "printer": "sparkx_i7", "filament": "PETG",          // пластик по умолчанию — материал задания
+//   "printer": "qidi_q2",                                // или {"base": "qidi_q2", "z_hop": 0.2, …}
+//   "filament": "PETG",                                   // по умолчанию — материал задания;
+//                                                         // или {"base": "PETG", "nozzle_temp": 245, …}
 //   "layer_height": 0.2, "first_layer_height": 0.2, "line_width": 0.42,
 //   "walls": 2, "top_layers": 5, "bottom_layers": 3,
 //   "infill": 15, "pattern": "grid", "infill_angle": 45,  // заполнение в процентах
 //   "rotate": [90, 0, 0],                                 // градусы вокруг X, затем Y, затем Z
-//   "skirt": true,
-//   "support": "none",                                     // none, normal (обычные), tree (древовидные)
-//   "support_angle": 40, "support_on_bed_only": false     // угол нависания к горизонтали; только от стола
+//   "support": "none",                                    // none, normal (обычные), tree (древовидные)
+//   …и любые другие настройки печати из таблицы profiles.hpp (скорости, ускорения, кайма, шов…)
 // }
 
 #include <array>

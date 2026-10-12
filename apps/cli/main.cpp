@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -27,6 +28,7 @@
 #include "kika/material/material.hpp"
 #include "kika/parallel.hpp"
 #include "kika/report/report.hpp"
+#include "kika/printer/moonraker.hpp"
 #include "kika/slicer/print_job.hpp"
 #include "kika/util/json.hpp"
 #include "kika/version.hpp"
@@ -109,8 +111,13 @@ struct Args {
   std::vector<std::string> positional;
   std::map<std::string, std::string> values;  // по последнему (длинному) имени
   std::map<std::string, bool> flags;
+  std::map<std::string, std::vector<std::string>> lists;  // все значения повторяемых параметров
 
   bool flag(const std::string& name) const { return flags.count(name) > 0; }
+  std::vector<std::string> all(const std::string& name) const {
+    const auto it = lists.find(name);
+    return it == lists.end() ? std::vector<std::string>{} : it->second;
+  }
   std::optional<std::string> value(const std::string& name) const {
     const auto it = values.find(name);
     if (it == values.end()) return std::nullopt;
@@ -149,6 +156,7 @@ Args parse_args(const std::vector<std::string>& args, std::size_t start, const s
         if (i + 1 >= args.size()) throw UsageError("после " + a + " нужно значение");
         out.values[key] = args[++i];
       }
+      out.lists[key].push_back(out.values[key]);
     } else {
       if (inline_value) throw UsageError(a + " задаётся без значения");
       out.flags[key] = true;
@@ -324,7 +332,9 @@ const std::vector<Option> kSliceOptions = {
     {{"--first-layer"}, true}, {{"--line-width"}, true}, {{"--walls"}, true},        {{"--top"}, true},
     {{"--bottom"}, true},     {{"--infill"}, true},      {{"--pattern"}, true},      {{"--angle"}, true},
     {{"--rotate"}, true},     {{"--no-skirt"}, false},   {{"--support"}, true},      {{"--support-angle"}, true},
-    {{"--bed-only"}, false},  {{"-q", "--quiet"}, false}};
+    {{"--bed-only"}, false},  {{"-q", "--quiet"}, false},   {{"--brim"}, true},         {{"--seam"}, true},
+    {{"--set"}, true},        {{"--send"}, true},        {{"--start"}, false},       {{"--key"}, true},
+    {{"--name"}, true}};
 
 // Поле "print" задания из параметров командной строки.
 Value print_from_args(const Args& a) {
@@ -355,8 +365,44 @@ Value print_from_args(const Args& a) {
   if (auto v = a.value("--support")) pr["support"] = *v;
   num_opt("--support-angle", "support_angle");
   if (a.flag("--bed-only")) pr["support_on_bed_only"] = true;
+  num_opt("--brim", "brim_width");
+  if (auto v = a.value("--seam")) pr["seam"] = *v;
+  // --set ключ=значение: любая настройка печати; printer.ключ и filament.ключ — принтера и пластика
+  for (const auto& kv : a.all("--set")) {
+    const auto eq = kv.find('=');
+    if (eq == std::string::npos || eq == 0) throw UsageError("--set: нужно ключ=значение, например --set speed_outer_wall=120");
+    std::string key = kv.substr(0, eq);
+    const std::string text = kv.substr(eq + 1);
+    Value v;
+    try {
+      std::size_t pos = 0;
+      const double d = std::stod(text, &pos);
+      v = pos == text.size() ? Value(d) : Value(text);
+    } catch (...) {
+      v = text == "true" || text == "да" ? Value(true) : text == "false" || text == "нет" ? Value(false) : Value(text);
+    }
+    for (const char* sec : {"printer", "filament"}) {
+      const std::string prefix = std::string(sec) + ".";
+      if (key.starts_with(prefix)) {
+        Value& obj = pr[sec];
+        if (obj.is_null()) {
+          obj = Value::object();
+        } else if (obj.is_string()) {
+          const std::string base = obj.as_string();
+          obj = Value::object();
+          obj["base"] = base;
+        }
+        obj[key.substr(prefix.size())] = v;
+        key.clear();
+      }
+    }
+    if (!key.empty()) pr[key] = v;
+  }
   return pr;
 }
+
+int send_gcode(const std::string& gcode, const std::string& name, const std::string& address, const std::string& key,
+               bool start);
 
 fs::path default_gcode_path(const fs::path& model) {
   fs::path out = model;
@@ -370,7 +416,143 @@ int cmd_slice(const std::string& model_arg, const Args& a) {
   const Value pr = print_from_args(a);
   const std::string out = a.value("--out").value_or(utf8_from_path(default_gcode_path(model)));
   std::cout << "Модель: " << utf8_from_path(model) << std::endl;
-  slice_model(model, &pr, "PETG", out, a.flag("--quiet"));
+  const std::string gcode = slice_model(model, &pr, "PETG", out, a.flag("--quiet"));
+  if (auto addr = a.value("--send")) {
+    const std::string name = a.value("--name").value_or(utf8_from_path(model.stem()));
+    return send_gcode(gcode, name, *addr, a.value("--key").value_or(""), a.flag("--start"));
+  }
+  if (a.flag("--start")) throw UsageError("--start — вместе с --send АДРЕС: куда отправить");
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// kika printer, kika send: принтер с Klipper (Moonraker) по сети
+
+std::string printer_address(const std::optional<std::string>& arg) {
+  if (arg) return *arg;
+  if (const char* env = std::getenv("KIKA_PRINTER"); env && *env) return env;
+  throw UsageError("укажите адрес принтера: --printer 192.168.1.50 (или переменная окружения KIKA_PRINTER)");
+}
+
+kika::printer::Moonraker connect_printer(const std::string& address, const std::string& key) {
+  const auto addr = kika::printer::parse_address(address);
+  if (!addr) throw UsageError("непонятный адрес принтера «" + address + "»: нужно 192.168.1.50 или имя:порт");
+  const auto pi = kika::printer::probe(addr->host, addr->port, 3000);
+  if (!pi)
+    throw std::runtime_error("По адресу " + address + " не отвечает Moonraker (порт " +
+                             (addr->port ? std::to_string(*addr->port) : std::string("7125 и 80")) +
+                             "). Проверьте, что принтер включён и в той же сети.");
+  kika::printer::Connection c;
+  c.host = addr->host;
+  c.port = pi->port;
+  c.api_key = key;
+  c.timeout_ms = 10000;
+  std::cout << std::format("Принтер: {} ({}:{}), Klipper {}, состояние {}\n", pi->hostname.empty() ? addr->host : pi->hostname,
+                           addr->host, pi->port, pi->klipper_version.empty() ? "?" : pi->klipper_version,
+                           pi->klippy_state.empty() ? "?" : pi->klippy_state);
+  if (!pi->state_message.empty() && !pi->ready()) std::cout << "  " << pi->state_message << "\n";
+  return kika::printer::Moonraker(c);
+}
+
+std::string state_name(const std::string& st) {
+  if (st == "standby") return "ожидает";
+  if (st == "printing") return "печатает";
+  if (st == "paused") return "пауза";
+  if (st == "complete") return "печать закончена";
+  if (st == "cancelled") return "печать отменена";
+  if (st == "error") return "ошибка";
+  return st.empty() ? "?" : st;
+}
+
+void print_status(const kika::printer::PrinterStatus& st) {
+  std::cout << "  " << state_name(st.state);
+  if (st.busy() || st.state == "complete")
+    std::cout << std::format(": {}, {} %", st.filename, num(st.progress * 100, 0));
+  if (st.total_layers > 0) std::cout << std::format(", слой {} из {}", st.layer, st.total_layers);
+  if (st.busy() && st.print_duration > 0) std::cout << std::format(", идёт {} мин", num(st.print_duration / 60, 0));
+  std::cout << "\n";
+  std::cout << std::format("  сопло {} / {} °C, стол {} / {} °C", num(st.nozzle, 0), num(st.nozzle_target, 0), num(st.bed, 0),
+                           num(st.bed_target, 0));
+  if (st.chamber) std::cout << std::format(", камера {} / {} °C", num(*st.chamber, 0), num(st.chamber_target.value_or(0), 0));
+  std::cout << "\n";
+  if (!st.message.empty()) std::cout << "  " << st.message << "\n";
+}
+
+int send_gcode(const std::string& gcode, const std::string& name, const std::string& address, const std::string& key,
+               bool start) {
+  const auto m = connect_printer(address, key);
+  const std::string file = kika::printer::printer_filename(name);
+  bool run = start;
+  if (start) {
+    const auto info = m.info();
+    if (!info.ready()) {
+      std::cout << "  ⚠ Klipper не готов — файл отправлю, но печать не запущу.\n";
+      run = false;
+    } else if (const auto st = m.status(); st.busy()) {
+      std::cout << "  ⚠ Принтер сейчас занят (" << state_name(st.state) << ": " << st.filename
+                << ") — файл отправлю, но печать не запущу.\n";
+      run = false;
+    }
+  }
+  int last = -1;
+  const auto r = m.upload(file, gcode, run, [&](std::size_t sent, std::size_t total) {
+    const int pct = static_cast<int>(100.0 * static_cast<double>(sent) / static_cast<double>(std::max<std::size_t>(total, 1)));
+    if (pct / 10 != last / 10) {
+      std::cout << std::format("  отправка {} %", pct) << std::endl;
+      last = pct;
+    }
+    return true;
+  });
+  std::cout << "  Файл на принтере: " << r.path << "\n";
+  if (r.print_started)
+    std::cout << "  Печать запущена. Принтер сначала выровняет стол и прогреется — это несколько минут.\n";
+  else if (r.print_queued)
+    std::cout << "  Печать поставлена в очередь.\n";
+  else if (run)
+    std::cout << "  ⚠ Принтер принял файл, но печать не запустил — запустите её на экране принтера.\n";
+  return 0;
+}
+
+int cmd_send(const std::string& file_arg, const Args& a) {
+  const fs::path file = path_from_utf8(file_arg);
+  if (kika::geometry::is_model_file(file))
+    throw UsageError("kika send отправляет G-code; модель сначала нарежьте: kika slice модель.stl --send АДРЕС");
+  const std::string gcode = read_file(file);
+  const std::string name = a.value("--name").value_or(utf8_from_path(file.stem()));
+  return send_gcode(gcode, name, printer_address(a.value("--printer")), a.value("--key").value_or(""), a.flag("--start"));
+}
+
+int cmd_printer(const std::optional<std::string>& address, const Args& a) {
+  if (!address) {
+    const auto me = kika::printer::local_ipv4();
+    if (!me) throw std::runtime_error("Нет сети: не нашёл своего адреса в локальной сети.");
+    std::cout << "Ищу принтеры с Moonraker в сети " << me->substr(0, me->rfind('.')) << ".* …" << std::endl;
+    const auto found = kika::printer::discover();
+    if (found.empty()) {
+      std::cout << "Не нашёл. Проверьте, что принтер включён и в той же сети, или укажите адрес: kika printer 192.168.1.50\n"
+                   "(адрес видно на экране принтера в настройках сети).\n";
+      return 1;
+    }
+    for (const auto& pi : found)
+      std::cout << std::format("  {}:{}  {}  Klipper {}  {}\n", pi.host, pi.port, pi.hostname, pi.klipper_version, pi.klippy_state);
+    return 0;
+  }
+  const auto m = connect_printer(*address, a.value("--key").value_or(""));
+  if (a.flag("--pause")) {
+    m.pause();
+    std::cout << "  Пауза.\n";
+  } else if (a.flag("--resume")) {
+    m.resume();
+    std::cout << "  Печать продолжена.\n";
+  } else if (a.flag("--cancel")) {
+    m.cancel();
+    std::cout << "  Печать отменена.\n";
+  }
+  if (!m.info().ready()) {
+    std::cout << "  Klipper не готов: состояние печати недоступно.\n";
+    return 1;
+  }
+  print_status(m.status());
   return 0;
 }
 
@@ -494,7 +676,8 @@ std::string slice_model(const fs::path& model_path, const Value* print, const st
                            im.mesh.triangles.size(), num(sz[0], 1), num(sz[1], 1), num(sz[2], 1),
                            num(im.mesh.volume() / 1000, 2));
   for (const auto& w : im.warnings) std::cout << "  ⚠ " << w << "\n";
-  const auto pj = kika::slicer::print_from_json(print, material);
+  auto pj = kika::slicer::print_from_json(print, material);
+  pj.settings.generated_at = kika::slicer::now_stamp();
   const auto& s = pj.settings;
   std::cout << std::format("  нарезка: {}, {}, слой {} мм, стенок {}, заполнение {}% {}{}\n", s.printer.name,
                            s.filament.type, num(s.layer_height, 2), s.wall_loops, num(s.infill_density * 100, 0),
@@ -514,12 +697,13 @@ std::string slice_model(const fs::path& model_path, const Value* print, const st
       }
     };
   }
-  const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, pj), s, prog, im.name);
+  const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, pj), s, prog, utf8_from_path(model_path.stem()));
   for (const auto& w : r.warnings) std::cout << "  ⚠ " << w << "\n";
   std::cout << std::format("  слоёв {}, пруток {} м ({} г{}), печать примерно {} ч {} мин\n", r.layers,
                            num(r.filament_mm / 1000, 2), num(r.filament_g, 0),
                            r.support_g > 0 ? std::format(", из них поддержки {} г", num(r.support_g, 1)) : std::string(),
                            static_cast<int>(r.print_time_s / 3600), static_cast<int>(std::fmod(r.print_time_s, 3600) / 60));
+  if (r.cost > 0) std::cout << std::format("  стоимость пластика ≈ {}\n", num(r.cost, 0));
   if (gcode_out) {
     write_file(path_from_utf8(*gcode_out), r.gcode);
     std::cout << "  G-code: " << *gcode_out << "\n";
@@ -646,6 +830,11 @@ void print_usage() {
             << "      --support-angle 40 --bed-only         нависание положе угла (к горизонтали) —\n"
             << "                                            с поддержкой; поддержки только от стола\n"
             << "      --rotate 90,0,0                       повернуть деталь (градусы вокруг X, Y, Z)\n"
+            << "      --brim 5 --seam rear                  кайма, мм; шов: aligned, nearest, rear, random\n"
+            << "      --set ключ=значение                   любая настройка: --set speed_outer_wall=120,\n"
+            << "                                            --set filament.nozzle_temp=250, --set printer.z_hop=0\n"
+            << "      --send 192.168.1.50 [--start]         отправить на принтер (Klipper, Moonraker);\n"
+            << "                                            --start — сразу печатать\n"
             << "  kika advise задание.json --goals speed,strength\n"
             << "                                            подобрать положение детали и настройки печати:\n"
             << "                                            две цели из трёх — speed (скорость), economy\n"
@@ -670,6 +859,10 @@ void print_usage() {
             << "      --threads 4                           число потоков (по умолчанию — все ядра)\n"
             << "      --tol 1e-7                            точность решателя (относительная невязка)\n"
             << "      --quiet                               без строк хода расчёта\n"
+            << "  kika printer [192.168.1.50]               принтер в сети: без адреса — найти, с адресом —\n"
+            << "                                            состояние; --pause, --resume, --cancel\n"
+            << "  kika send деталь.gcode --printer АДРЕС    отправить G-code на принтер; --start — печатать,\n"
+            << "                                            --name имя на принтере, --key ключ API Moonraker\n"
             << "  kika materials                            встроенная база материалов\n"
             << "  kika segments деталь.gcode -o отрезки.csv все отрезки экструзии в CSV\n"
             << "  kika --version                            версия\n\n"
@@ -860,7 +1053,8 @@ int run_main(const std::vector<std::string>& args) {
     print_usage();
     return finish(0);
   }
-  if (cmd != "info" && cmd != "segments" && cmd != "run" && cmd != "materials" && cmd != "slice" && cmd != "advise")
+  if (cmd != "info" && cmd != "segments" && cmd != "run" && cmd != "materials" && cmd != "slice" && cmd != "advise" &&
+      cmd != "printer" && cmd != "send")
     if (auto code = run_dropped_files(args)) return finish(*code);
 
   try {
@@ -889,6 +1083,19 @@ int run_main(const std::vector<std::string>& args) {
       std::optional<long long> re;
       if (a.value("--refine-elems")) re = static_cast<long long>(parse_number(*a.value("--refine-elems"), "--refine-elems"));
       return finish(cmd_advise(a.positional[0], *goals, me, re, a.value("--json"), a.value("--save-job"), variant));
+    }
+    if (cmd == "printer") {
+      const auto a = parse_args(args, 2, {{{"--key"}, true}, {{"--pause"}, false}, {{"--resume"}, false}, {{"--cancel"}, false}});
+      if (a.positional.size() > 1) throw UsageError("kika printer [АДРЕС] — один адрес принтера");
+      std::optional<std::string> addr;
+      if (!a.positional.empty()) addr = a.positional[0];
+      else if (const char* env = std::getenv("KIKA_PRINTER"); env && *env) addr = env;
+      return finish(cmd_printer(addr, a));
+    }
+    if (cmd == "send") {
+      const auto a = parse_args(args, 2, {{{"--printer"}, true}, {{"--start"}, false}, {{"--name"}, true}, {{"--key"}, true}});
+      if (a.positional.size() != 1) throw UsageError("укажите G-code: kika send деталь.gcode --printer 192.168.1.50 [--start]");
+      return finish(cmd_send(a.positional[0], a));
     }
     if (cmd == "materials") {
       parse_args(args, 2, {});

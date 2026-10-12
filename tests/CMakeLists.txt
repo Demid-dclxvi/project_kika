@@ -13,14 +13,19 @@ add_executable(kika_tests
   gcode/test_parser.cpp
   gcode/test_examples.cpp
   material/test_material.cpp
+  printer/test_moonraker.cpp
   report/test_report.cpp
   slicer/test_slicer.cpp
+  slicer/test_printer_gcode.cpp
   util/test_json.cpp
   voxel/test_voxel.cpp
 )
-target_link_libraries(kika_tests PRIVATE kika::core kika::report kika::app kika::geometry kika::slicer kika::advisor ZLIB::ZLIB Catch2::Catch2WithMain)
+target_link_libraries(kika_tests PRIVATE kika::core kika::report kika::app kika::geometry kika::slicer kika::advisor kika::printer ZLIB::ZLIB Catch2::Catch2WithMain)
 # Тесты читают эталонные G-code из папки прототипа
 target_compile_definitions(kika_tests PRIVATE KIKA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+if(WIN32)
+  target_link_libraries(kika_tests PRIVATE ws2_32)  # имитация сервера в тестах сети
+endif()
 kika_set_compile_options(kika_tests)
 
 # Одна запись CTest на все тесты: названия тестов русские, а автоматический поиск

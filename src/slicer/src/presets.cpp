@@ -9,9 +9,9 @@ namespace kika::slicer {
 
 namespace {
 
-// Стартовый код: нагрев, парковка, полоса прочистки у левого края стола.
-// Подходит для Marlin и Klipper. Перед печатью сверить с кодом своего принтера из его слайсера.
-const char* kStart = R"(M140 S{first_layer_bed_temp}
+// Стартовый код Marlin: нагрев, парковка, полоса прочистки у левого края стола.
+// Перед печатью сверить с кодом своего принтера из его слайсера.
+const char* kMarlinStart = R"(M140 S{first_layer_bed_temp}
 M104 S{first_layer_nozzle_temp}
 G28
 M190 S{first_layer_bed_temp}
@@ -28,7 +28,7 @@ G1 X3.6 Y20 E10 F1200
 G1 Z2 F600
 G92 E0)";
 
-const char* kEnd = R"(M104 S0
+const char* kMarlinEnd = R"(M104 S0
 M140 S0
 M107
 G91
@@ -38,14 +38,75 @@ G90
 G1 X5 Y{bed_y} F6000
 M84)";
 
+// QIDI Q2 (Klipper). Макрос PRINT_START прошивки сам паркует, выравнивает стол (Z_TILT_ADJUST),
+// снимает карту стола (только под деталями, если они размечены EXCLUDE_OBJECT_DEFINE), чистит сопло
+// и греет стол, камеру и сопло до BED, CHAMBER, HOTEND. Остальное — своё: подтверждаем температуры
+// и печатаем полосу прочистки вдоль переднего края (левый передний угол 11 × 16 мм не трогаем —
+// там механизм реза и чистки сопла).
+const char* kQidiQ2Start = R"(PRINT_START BED={first_layer_bed_temp} HOTEND={first_layer_nozzle_temp} CHAMBER={chamber_temp}
+SET_PRINT_STATS_INFO TOTAL_LAYER={total_layers}
+M140 S{first_layer_bed_temp}
+M141 S{chamber_temp}
+M104 S{first_layer_nozzle_temp}
+M190 S{first_layer_bed_temp}
+M109 S{first_layer_nozzle_temp}
+G90
+M83
+G92 E0
+G1 X200 Y2 F12000
+G1 Z0.3 F600
+G1 E2 F300
+G1 X140 Y2 E7 F1800
+G1 Y3.2 F3000
+G1 X190 Y3.2 E3.5 F3000
+G1 Z1 F600
+G92 E0)";
+
+// Конец: отвести сопло, опустить стол, остудить; PRINT_END прошивки выключает вентиляторы,
+// нагреватели и моторы.
+const char* kQidiQ2End = R"(G1 E-2 F1800
+G1 Z{lift_z} F600
+G1 X90 Y265 F12000
+G1 Z{park_z} F600
+M104 S0
+M140 S0
+M141 S0
+PRINT_END)";
+
+const char* kKlipperLayer = "SET_PRINT_STATS_INFO CURRENT_LAYER={layer_num}";
+
 }  // namespace
 
 const std::vector<Printer>& printers() {
   static const std::vector<Printer> list = [] {
+    Printer q2;  // значения по умолчанию в Printer — QIDI Q2
+    q2.start_gcode = kQidiQ2Start;
+    q2.end_gcode = kQidiQ2End;
+    q2.layer_gcode = kKlipperLayer;
+
     Printer i7;
-    i7.start_gcode = kStart;
-    i7.end_gcode = kEnd;
-    Printer generic;
+    i7.key = "sparkx_i7";
+    i7.name = "Creality SPARKX i7";
+    i7.flavor = Flavor::Marlin;
+    i7.bed_x = 260;
+    i7.bed_y = 260;
+    i7.max_z = 255;
+    i7.max_nozzle_temp = 300;
+    i7.max_bed_temp = 100;
+    i7.max_chamber_temp = 0;
+    i7.max_speed = 300;
+    i7.max_accel = 5000;
+    i7.corner_speed = 10;
+    i7.max_speed_z = 10;
+    i7.retract_length = 0.8;
+    i7.retract_speed = 40;
+    i7.retract_min_travel = 2.0;
+    i7.z_hop = 0;
+    i7.aux_fan = false;
+    i7.start_gcode = kMarlinStart;
+    i7.end_gcode = kMarlinEnd;
+
+    Printer generic = i7;
     generic.key = "generic_220";
     generic.name = "Принтер 220×220 (Marlin)";
     generic.bed_x = 220;
@@ -53,9 +114,9 @@ const std::vector<Printer>& printers() {
     generic.max_z = 250;
     generic.max_bed_temp = 110;
     generic.max_nozzle_temp = 260;
-    generic.start_gcode = kStart;
-    generic.end_gcode = kEnd;
-    return std::vector<Printer>{i7, generic};
+    generic.max_speed = 150;
+    generic.max_accel = 1500;
+    return std::vector<Printer>{q2, i7, generic};
   }();
   return list;
 }
@@ -68,35 +129,87 @@ const Printer* find_printer(std::string_view key) {
   return nullptr;
 }
 
+std::string_view flavor_key(Flavor f) { return f == Flavor::Klipper ? "klipper" : "marlin"; }
+
+std::optional<Flavor> flavor_from_key(std::string_view key) {
+  std::string k;
+  for (char c : key) k.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  if (k == "klipper") return Flavor::Klipper;
+  if (k == "marlin" || k == "marlin2" || k == "reprap" || k == "reprapfirmware") return Flavor::Marlin;
+  return std::nullopt;
+}
+
+namespace {
+
+// Обычные пластики: значения — типичные для принтера с закрытой камерой и соплом 0,4 мм.
+// тип, сопло, сопло 1-го слоя, стол, стол 1-го слоя, камера, поток, мм³/с, мм/с, плотность,
+// обдув мин/макс, слоёв без обдува, полный обдув при слое короче, замедление при слое короче,
+// обдув нависаний, боковой обдув
+struct FilamentRow {
+  const char* type;
+  double nozzle, nozzle1, bed, bed1, chamber, flow, vol, speed, density;
+  double fan_min, fan_max;
+  int fan_off;
+  double full_time, slow_time, overhang, aux;
+};
+
+constexpr FilamentRow kFilaments[] = {
+    {"PLA", 210, 215, 60, 60, 0, 0.98, 21, 500, 1.24, 1.0, 1.0, 1, 60, 8, 1.0, 0.7},
+    {"PLA-CF", 220, 225, 60, 60, 0, 0.98, 15, 400, 1.29, 1.0, 1.0, 1, 60, 8, 1.0, 0.5},
+    {"PETG", 240, 245, 70, 70, 0, 0.95, 12, 300, 1.27, 0.3, 0.5, 1, 20, 8, 0.9, 0},
+    {"PETG-CF", 255, 255, 80, 80, 0, 0.95, 11, 250, 1.25, 0.05, 0.4, 3, 30, 6, 1.0, 0},
+    {"ABS", 250, 255, 100, 100, 50, 0.95, 18, 400, 1.04, 0.1, 0.4, 3, 30, 4, 0.8, 0},
+    {"ASA", 255, 255, 100, 100, 55, 0.92, 16, 400, 1.07, 0.1, 0.5, 3, 40, 4, 0.8, 0},
+    {"PC", 270, 270, 100, 100, 60, 0.95, 10, 250, 1.20, 0.0, 0.3, 3, 30, 6, 0.6, 0},
+    {"PA", 260, 260, 80, 80, 0, 0.96, 8, 200, 1.14, 0.0, 0.3, 3, 20, 8, 0.4, 0},
+    {"PA-CF", 280, 280, 80, 80, 0, 0.96, 8, 200, 1.25, 0.2, 0.4, 3, 10, 8, 0.4, 0},
+    {"TPU", 225, 225, 45, 45, 0, 1.0, 3.6, 40, 1.21, 1.0, 1.0, 1, 60, 8, 1.0, 0},
+};
+
+Filament from_row(const FilamentRow& r) {
+  Filament f;
+  f.name = r.type;
+  f.type = r.type;
+  f.nozzle_temp = r.nozzle;
+  f.first_layer_nozzle_temp = r.nozzle1;
+  f.bed_temp = r.bed;
+  f.first_layer_bed_temp = r.bed1;
+  f.chamber_temp = r.chamber;
+  f.flow = r.flow;
+  f.max_volumetric = r.vol;
+  f.max_speed = r.speed;
+  f.density = r.density;
+  f.fan_min = r.fan_min;
+  f.fan_max = r.fan_max;
+  f.fan_off_layers = r.fan_off;
+  f.fan_full_time = r.full_time;
+  f.slowdown_time = r.slow_time;
+  f.overhang_fan = r.overhang;
+  f.aux_fan = r.aux;
+  return f;
+}
+
+}  // namespace
+
+const std::vector<Filament>& filaments() {
+  static const std::vector<Filament> list = [] {
+    std::vector<Filament> v;
+    for (const auto& r : kFilaments) v.push_back(from_row(r));
+    return v;
+  }();
+  return list;
+}
+
 Filament filament_preset(std::string_view type) {
   std::string t(type);
   for (char& c : t) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-  // сопло, сопло 1-го слоя, стол, стол 1-го слоя, обдув, плотность, скорость
-  struct P {
-    const char* key;
-    double nozzle, nozzle1, bed, bed1, fan, density, speed;
-  };
-  static const P table[] = {
-      {"PLA", 210, 215, 60, 60, 1.0, 1.24, 250},     {"PLA-CF", 220, 225, 60, 60, 1.0, 1.29, 200},
-      {"PETG", 240, 245, 70, 70, 0.4, 1.27, 200},    {"PETG-CF", 250, 255, 75, 75, 0.3, 1.30, 160},
-      {"ABS", 250, 255, 100, 100, 0.0, 1.04, 200},   {"ASA", 255, 260, 100, 100, 0.2, 1.07, 200},
-      {"PC", 270, 270, 100, 100, 0.0, 1.20, 120},    {"PA", 260, 260, 80, 80, 0.0, 1.14, 120},
-      {"PA-CF", 280, 280, 90, 90, 0.0, 1.25, 120},   {"TPU", 225, 225, 45, 45, 1.0, 1.21, 40},
-  };
-  Filament f;
-  f.type = std::string(type);
-  const P* p = nullptr;
-  for (const auto& e : table)
-    if (t == e.key) p = &e;
-  if (!p) p = &table[0];
-  f.nozzle_temp = p->nozzle;
-  f.first_layer_nozzle_temp = p->nozzle1;
-  f.bed_temp = p->bed;
-  f.first_layer_bed_temp = p->bed1;
-  f.fan = p->fan;
-  f.density = p->density;
-  f.max_speed = p->speed;
-  if (f.type.empty()) f.type = "PLA";
+  for (const auto& f : filaments())
+    if (f.type == t) return f;
+  Filament f = filaments().front();  // неизвестный — как PLA, но со своим названием
+  if (!type.empty()) {
+    f.type = std::string(type);
+    f.name = std::string(type);
+  }
   return f;
 }
 
@@ -177,6 +290,36 @@ std::string_view support_name(Support s) {
     case Support::Tree: return "Древовидные";
   }
   return "Без поддержек";
+}
+
+std::string_view seam_key(Seam s) {
+  switch (s) {
+    case Seam::Aligned: return "aligned";
+    case Seam::Nearest: return "nearest";
+    case Seam::Rear: return "rear";
+    case Seam::Random: return "random";
+  }
+  return "aligned";
+}
+
+std::string_view seam_name(Seam s) {
+  switch (s) {
+    case Seam::Aligned: return "Друг над другом";
+    case Seam::Nearest: return "Ближе к соплу";
+    case Seam::Rear: return "Сзади";
+    case Seam::Random: return "Случайно";
+  }
+  return "Друг над другом";
+}
+
+std::optional<Seam> seam_from_key(std::string_view key) {
+  std::string k;
+  for (char c : key) k.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  if (k == "aligned") return Seam::Aligned;
+  if (k == "nearest") return Seam::Nearest;
+  if (k == "rear" || k == "back") return Seam::Rear;
+  if (k == "random") return Seam::Random;
+  return std::nullopt;
 }
 
 std::optional<Support> support_from_key(std::string_view key) {

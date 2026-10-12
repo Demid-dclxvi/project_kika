@@ -24,6 +24,7 @@
 #include "kika/app/scene.hpp"
 #include "kika/geometry/import.hpp"
 #include "kika/slicer/print_job.hpp"
+#include "kika/slicer/profiles.hpp"
 #include "kika/util/json.hpp"
 
 class QButtonGroup;
@@ -46,6 +47,7 @@ class QWidget;
 namespace kika::gui {
 
 class Viewer;
+class PrinterDialog;
 
 // Что сделать после запуска — для проверок окна без человека (снимок экрана в CI).
 struct StartupScript {
@@ -67,6 +69,11 @@ struct StartupScript {
   QString save_job;                 // сохранить задание
   QString save_gcode;               // сохранить G-code своей нарезки
   QString screenshot;               // снимок окна и выход
+  QString settings_shot;            // снимок окна всех настроек печати
+  QString printer;                  // подключиться к принтеру (адрес)
+  bool send = false;                // отправить G-code на принтер (без запуска)
+  bool send_print = false;          // отправить и начать печать (без подтверждения — для проверок)
+  QString printer_shot;             // снимок окна принтера
 };
 
 class MainWindow : public QMainWindow {
@@ -126,6 +133,13 @@ class MainWindow : public QMainWindow {
   void rotate_part(int axis);
   void export_report(const QString& path = {});
   void about();
+  // настройки печати (все) и принтер по сети
+  slicer::Filament job_filament() const;  // пластик для нарезки: свой из настроек или по материалу
+  void open_settings(slicer::Section first);
+  void apply_settings(const slicer::Settings& s);
+  void fill_printer_combo();
+  void open_printer();
+  void update_printer_source();
   void rebuild_mesh();
   void run_analysis();
   void on_pick(const std::optional<app::Hit>& hit, Qt::KeyboardModifiers mods);
@@ -224,6 +238,8 @@ class MainWindow : public QMainWindow {
   QPushButton* btn_open_job_ = nullptr;
   QPushButton* btn_save_job_ = nullptr;
   QPushButton* btn_report_ = nullptr;
+  QPushButton* btn_printer_ = nullptr;
+  PrinterDialog* printer_dlg_ = nullptr;
   QPushButton* btn_save_gcode_ = nullptr;
   QWidget* print_box_ = nullptr;
   QComboBox* printer_combo_ = nullptr;

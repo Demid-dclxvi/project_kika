@@ -1,7 +1,7 @@
 {
   "model": "bracket_L.3mf",
   "print": {
-    "printer": "sparkx_i7",
+    "printer": "qidi_q2",
     "layer_height": 0.2,
     "walls": 3,
     "top_layers": 5,

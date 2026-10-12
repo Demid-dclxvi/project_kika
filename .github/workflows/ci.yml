@@ -147,6 +147,26 @@ jobs:
           assert all(c['verdict'] == 'ok' for c in cases), cases
           PY
 
+      - name: Отправка на принтер (имитация Moonraker)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: |
+          bin=build/${{ matrix.preset }}/bin
+          python3 tools/mock_moonraker.py --port 7130 --dir mock_gcodes --speed 60 > mock.log 2>&1 &
+          sleep 1
+          $bin/kika printer 127.0.0.1:7130
+          $bin/kika slice examples/bracket_L.3mf -q --send 127.0.0.1:7130 --start --name "Уголок"
+          grep -q "принят Ugolok.gcode" mock.log
+          grep -q "печать: True" mock.log
+          grep -q "PRINT_START BED=" mock_gcodes/Ugolok.gcode
+          $bin/kika printer 127.0.0.1:7130 --pause | grep -q "пауза"
+          $bin/kika printer 127.0.0.1:7130 --cancel | grep -q "отменена"
+          # окно: подключиться, нарезать и отправить с запуском
+          xvfb-run -a -s "-screen 0 1600x1000x24" $bin/kika-gui examples/bracket_L.job.json --printer 127.0.0.1:7130 \
+            --send-print --printer-shot kika-gui-linux-printer.png --settings-shot kika-gui-linux-settings.png
+          grep -q "принят bracket_L.gcode" mock.log
+          kill %1 || true
+
       - name: Окно на Linux (виртуальный экран)
         if: runner.os == 'Linux'
         timeout-minutes: 10

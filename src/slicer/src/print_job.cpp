@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "kika/analysis/job.hpp"
+#include "kika/slicer/profiles.hpp"
 
 namespace kika::slicer {
 
@@ -15,17 +16,6 @@ namespace {
 using analysis::JobError;
 using json::Value;
 
-double number(const Value& o, const char* key, double def, double lo, double hi) {
-  const Value* v = o.find(key);
-  if (!v || v->is_null()) return def;
-  if (!v->is_number()) throw JobError(std::string("print.") + key + ": ожидается число");
-  const double x = v->as_double();
-  if (!(x >= lo && x <= hi))
-    throw JobError(std::string("print.") + key + ": значение " + json::dump(*v) + " вне допустимого (" +
-                   json::dump(Value(lo)) + "…" + json::dump(Value(hi)) + ")");
-  return x;
-}
-
 std::string text(const Value& o, const char* key, const std::string& def) {
   const Value* v = o.find(key);
   if (!v || v->is_null()) return def;
@@ -33,56 +23,61 @@ std::string text(const Value& o, const char* key, const std::string& def) {
   return v->as_string();
 }
 
+std::string known_printers() {
+  std::string known;
+  for (const auto& x : printers()) known += (known.empty() ? "" : ", ") + x.key;
+  return known;
+}
+
+const Printer& printer_by_key(const std::string& key) {
+  const Printer* pr = find_printer(key);
+  if (!pr) throw JobError("print.printer: неизвестный принтер «" + key + "», есть: " + known_printers());
+  return *pr;
+}
+
+// Основные настройки печати пишутся всегда, остальные — если отличаются от обычных.
+constexpr const char* kMainKeys[] = {"layer_height", "first_layer_height", "line_width", "walls", "top_layers",
+                                     "bottom_layers", "infill", "pattern", "infill_angle", "skirt", "support"};
+
 }  // namespace
 
 PrintJob print_from_json(const Value* print, const std::string& material) {
   PrintJob p;
   // тип пластика: из материала задания ("PETG" или {"base": "PETG", …})
-  std::string filament = material.empty() ? std::string("PLA") : material;
+  const std::string filament = material.empty() ? std::string("PLA") : material;
   const Value empty = Value::object();
   const Value& o = print ? *print : empty;
   if (!o.is_object()) throw JobError("print: ожидается объект {…} с настройками нарезки");
-  const std::string printer = text(o, "printer", default_printer().key);
-  const Printer* pr = find_printer(printer);
-  if (!pr) {
-    std::string known;
-    for (const auto& x : printers()) known += (known.empty() ? "" : ", ") + x.key;
-    throw JobError("print.printer: неизвестный принтер «" + printer + "», есть: " + known);
-  }
   Settings& s = p.settings;
-  s.printer = *pr;
-  s.filament = filament_preset(text(o, "filament", filament));
-  s.layer_height = number(o, "layer_height", s.layer_height, 0.04, 0.6);
-  s.first_layer_height = number(o, "first_layer_height", s.layer_height, 0.04, 0.6);
-  s.line_width = number(o, "line_width", s.line_width, 0.2, 1.2);
-  s.wall_loops = static_cast<int>(number(o, "walls", s.wall_loops, 1, 20));
-  s.top_layers = static_cast<int>(number(o, "top_layers", s.top_layers, 0, 50));
-  s.bottom_layers = static_cast<int>(number(o, "bottom_layers", s.bottom_layers, 0, 50));
-  s.infill_density = number(o, "infill", s.infill_density * 100, 0, 100) / 100.0;
-  const std::string pat = text(o, "pattern", std::string(pattern_key(s.pattern)));
-  const auto pk = pattern_from_key(pat);
-  if (!pk) {
-    std::string known;
-    for (Pattern x : patterns()) known += (known.empty() ? "" : ", ") + std::string(pattern_key(x));
-    throw JobError("print.pattern: неизвестный рисунок «" + pat + "», есть: " + known);
+  // принтер: ключ встроенного или {"base": ключ, …свои значения}
+  if (const Value* pv = o.find("printer"); pv && !pv->is_null()) {
+    if (pv->is_string()) {
+      s.printer = printer_by_key(pv->as_string());
+    } else if (pv->is_object()) {
+      s.printer = printer_by_key(text(*pv, "base", default_printer().key));
+      section_from_json(s, Section::Printer, *pv, "print.printer", {"base"});
+    } else {
+      throw JobError("print.printer: ожидается ключ принтера (" + known_printers() + ") или {\"base\": …, …}");
+    }
+  } else {
+    s.printer = default_printer();
   }
-  s.pattern = *pk;
-  s.infill_angle = number(o, "infill_angle", s.infill_angle, -360, 360);
-  {
-    const std::string sup = text(o, "support", "none");
-    const auto sk = support_from_key(sup);
-    if (!sk) throw JobError("print.support: неизвестный вид поддержек «" + sup + "», есть: none, normal, tree");
-    s.support = *sk;
+  // пластик: тип из базы или {"base": тип, …свои значения}
+  if (const Value* fv = o.find("filament"); fv && !fv->is_null()) {
+    if (fv->is_string()) {
+      s.filament = filament_preset(fv->as_string());
+    } else if (fv->is_object()) {
+      s.filament = filament_preset(text(*fv, "base", filament));
+      section_from_json(s, Section::Filament, *fv, "print.filament", {"base"});
+    } else {
+      throw JobError("print.filament: ожидается тип пластика (PLA, PETG…) или {\"base\": …, …}");
+    }
+  } else {
+    s.filament = filament_preset(filament);
   }
-  s.support_angle = number(o, "support_angle", s.support_angle, 5, 85);
-  if (const Value* b = o.find("support_on_bed_only"); b && !b->is_null()) {
-    if (!b->is_bool()) throw JobError("print.support_on_bed_only: ожидается true или false");
-    s.support_on_bed_only = b->as_bool();
-  }
-  if (const Value* sk = o.find("skirt"); sk && !sk->is_null()) {
-    if (!sk->is_bool()) throw JobError("print.skirt: ожидается true или false");
-    s.skirt = sk->as_bool();
-  }
+  section_from_json(s, Section::Process, o, "print", {"printer", "filament", "rotate"});
+  // первый слой не указан — как остальные
+  if (o.find("layer_height") && !o.find("first_layer_height")) s.first_layer_height = s.layer_height;
   if (const Value* r = o.find("rotate"); r && !r->is_null()) {
     if (!r->is_array() || r->size() != 3) throw JobError("print.rotate: ожидается [x, y, z] — углы в градусах");
     for (std::size_t a = 0; a < 3; ++a) {
@@ -96,22 +91,42 @@ PrintJob print_from_json(const Value* print, const std::string& material) {
 Value print_to_json(const PrintJob& p) {
   const Settings& s = p.settings;
   Value o = Value::object();
-  o["printer"] = s.printer.key;
-  o["filament"] = s.filament.type;
-  o["layer_height"] = s.layer_height;
-  o["first_layer_height"] = s.first_layer_height;
-  o["line_width"] = s.line_width;
-  o["walls"] = s.wall_loops;
-  o["top_layers"] = s.top_layers;
-  o["bottom_layers"] = s.bottom_layers;
-  o["infill"] = std::round(s.infill_density * 1000) / 10;
-  o["pattern"] = std::string(pattern_key(s.pattern));
-  o["infill_angle"] = s.infill_angle;
-  o["skirt"] = s.skirt;
-  o["support"] = std::string(support_key(s.support));
-  if (s.support != Support::None) {
-    o["support_angle"] = s.support_angle;
-    o["support_on_bed_only"] = s.support_on_bed_only;
+  // принтер и пластик: ключ встроенного, а если что-то изменено — с отличиями
+  {
+    Settings base = s;
+    const Printer* pr = find_printer(s.printer.key);
+    base.printer = pr ? *pr : default_printer();
+    Value diff = section_to_json(s, Section::Printer, &base);
+    if (diff.as_object().empty() && pr) {
+      o["printer"] = s.printer.key;
+    } else {
+      Value po = Value::object();
+      po["base"] = base.printer.key;
+      for (auto& [k, v] : diff.as_object()) po[k] = v;
+      o["printer"] = std::move(po);
+    }
+  }
+  {
+    Settings base = s;
+    base.filament = filament_preset(s.filament.type);
+    Value diff = section_to_json(s, Section::Filament, &base);
+    if (diff.as_object().empty()) {
+      o["filament"] = s.filament.type;
+    } else {
+      Value fo = Value::object();
+      fo["base"] = s.filament.type;
+      for (auto& [k, v] : diff.as_object()) fo[k] = v;
+      o["filament"] = std::move(fo);
+    }
+  }
+  const Settings defaults;
+  for (const auto& f : fields()) {
+    if (f.section != Section::Process) continue;
+    bool main = false;
+    for (const char* k : kMainKeys) main = main || f.key == k;
+    if (s.support != Support::None && (f.key == "support_angle" || f.key == "support_on_bed_only")) main = true;
+    const Value v = f.get(s);
+    if (main || json::dump(v) != json::dump(f.get(defaults))) o[f.key] = v;
   }
   if (p.rotate != std::array<double, 3>{0, 0, 0}) o["rotate"] = Value::array_of(p.rotate);
   return o;
