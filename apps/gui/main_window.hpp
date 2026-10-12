@@ -8,6 +8,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -16,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "kika/advisor/advisor.hpp"
 #include "kika/analysis/analysis.hpp"
 #include "kika/app/job_model.hpp"
 #include "kika/app/roads.hpp"
@@ -57,6 +59,8 @@ struct StartupScript {
   std::string display;              // roads (нити), voxels (сетка)
   std::vector<int> rotate;          // повороты модели на 90° (оси 0…2) с новой нарезкой
   std::string support;              // поддержки: none, normal, tree (с новой нарезкой)
+  std::string advise;               // подбор печати: две цели, например economy,strength
+  bool apply_advice = false;        // применить рекомендацию подбора
   std::string tool;                 // plane, hole, brush
   std::vector<std::pair<double, double>> picks;   // щелчки по 3D-виду, доли ширины и высоты
   QString report;                   // сохранить отчёт
@@ -149,6 +153,13 @@ class MainWindow : public QMainWindow {
   };
   void start_load(LoadPlan plan);
   void render_print_settings();
+  // подбор печати
+  void on_goal(int k, bool on);
+  advisor::Goals goals() const;
+  void update_advise_state();
+  void run_advisor();
+  void render_advice();
+  void apply_candidate(std::size_t k);
   void refit_panel();
   void read_print_settings();
   void update_print_state();
@@ -221,6 +232,12 @@ class MainWindow : public QMainWindow {
   QCheckBox* support_bed_ = nullptr;
   QCheckBox* supports_on_ = nullptr;  // показ поддержек на нитях
   bool refit_pending_ = false;
+  std::array<QPushButton*, 3> goal_btn_{};
+  std::vector<int> goal_order_;  // порядок выбора целей: третья вытесняет первую
+  QPushButton* btn_advise_ = nullptr;
+  QLabel* advise_summary_ = nullptr;
+  QVBoxLayout* advise_list_ = nullptr;
+  std::shared_ptr<const advisor::Result> advice_;
   QLineEdit* layer_edit_ = nullptr;
   QLineEdit* walls_edit_ = nullptr;
   QLineEdit* infill_edit_ = nullptr;

@@ -6,6 +6,7 @@ add_executable(kika_tests
   app/test_app.cpp
   app/test_roads.cpp
   analysis/test_job.cpp
+  advisor/test_advisor.cpp
   fem/test_fem.cpp
   geometry/test_import.cpp
   gcode/test_roles.cpp
@@ -17,7 +18,7 @@ add_executable(kika_tests
   util/test_json.cpp
   voxel/test_voxel.cpp
 )
-target_link_libraries(kika_tests PRIVATE kika::core kika::report kika::app kika::geometry kika::slicer ZLIB::ZLIB Catch2::Catch2WithMain)
+target_link_libraries(kika_tests PRIVATE kika::core kika::report kika::app kika::geometry kika::slicer kika::advisor ZLIB::ZLIB Catch2::Catch2WithMain)
 # Тесты читают эталонные G-code из папки прототипа
 target_compile_definitions(kika_tests PRIVATE KIKA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 kika_set_compile_options(kika_tests)

@@ -725,6 +725,43 @@ QWidget* MainWindow::build_panel() {
     print_warns_ = new QVBoxLayout;
     print_warns_->setSpacing(6);
     pb->addLayout(print_warns_);
+    // подбор положения и настроек: две цели из трёх
+    pb->addSpacing(6);
+    pb->addWidget(make_label("Подбор положения и настроек", "itemTitle", false));
+    pb->addWidget(make_hint("Выберите две цели из трёх — третьей придётся поступиться. Прочность проверяется по "
+                            "закреплениям и нагрузкам из шагов 3–4: с ними подбор оставит только то, что выдержит."));
+    {
+      auto* grow = hbox(8);
+      QHBoxLayout* gseg = nullptr;
+      auto* gsegf = make_seg(&gseg);
+      const std::pair<const char*, const char*> goals[] = {
+          {"Быстро", "Меньше времени печати: толще слой, меньше стенок и заполнения"},
+          {"Экономно", "Меньше пластика (вместе с поддержками)"},
+          {"Прочно", "Больше запас прочности по нагрузкам задания"}};
+      for (int k = 0; k < 3; ++k) {
+        auto* b = make_seg_button(goals[k].first);
+        b->setToolTip(goals[k].second);
+        goal_btn_[static_cast<std::size_t>(k)] = b;
+        gseg->addWidget(b);
+        connect(b, &QPushButton::toggled, this, [this, k](bool on) { on_goal(k, on); });
+      }
+      grow->addWidget(gsegf);
+      btn_advise_ = make_button("Подобрать", "sm");
+      btn_advise_->setToolTip("Перебрать положения детали на столе и настройки печати: нарезка и расчёт на грубой сетке");
+      connect(btn_advise_, &QPushButton::clicked, this, [this] { run_advisor(); });
+      grow->addWidget(btn_advise_);
+      grow->addStretch();
+      pb->addLayout(grow);
+      // по умолчанию — экономно и прочно (детали под нагрузку)
+      goal_btn_[1]->setChecked(true);
+      goal_btn_[2]->setChecked(true);
+    }
+    advise_summary_ = make_hint("");
+    advise_summary_->hide();
+    pb->addWidget(advise_summary_);
+    advise_list_ = new QVBoxLayout;
+    advise_list_->setSpacing(6);
+    pb->addLayout(advise_list_);
     pb->addWidget(make_hint("Пластик берётся из шага «Материал»: температуры и обдув в G-code — для него. Ориентация "
                             "на столе сильнее всего влияет на прочность: слои плохо держат растяжение поперёк."));
     print_box_->hide();
@@ -1160,6 +1197,7 @@ void MainWindow::render_print_settings() {
                            .arg(fmtq(source_->filament_g, 0))
                            .arg(h > 0 ? QString("%1 ч %2 мин").arg(h).arg(m) : QString("%1 мин").arg(std::max(1, m)))
                            .arg(source_->support_g > 0 ? QString(" (поддержки %1 г)").arg(fmtq(source_->support_g, 1)) : QString()));
+  update_advise_state();
   // замечания к модели и нарезке: незамкнутая сетка, нависания, опора на стол
   clear_layout(print_warns_);
   for (const auto& w : source_->mesh->warnings) print_warns_->addWidget(make_warn(qs(w)));
@@ -1268,6 +1306,123 @@ void MainWindow::save_gcode(const QString& path) {
         };
       },
       "Пишу G-code");
+}
+
+// ---------------------------------------------------------------------------- подбор печати
+
+void MainWindow::on_goal(int k, bool on) {
+  std::erase(goal_order_, k);
+  if (on) {
+    goal_order_.push_back(k);
+    if (goal_order_.size() > 2) {  // третья цель вытесняет выбранную раньше всех
+      const int old = goal_order_.front();
+      goal_order_.erase(goal_order_.begin());
+      const QSignalBlocker block(goal_btn_[static_cast<std::size_t>(old)]);
+      goal_btn_[static_cast<std::size_t>(old)]->setChecked(false);
+    }
+  }
+  update_advise_state();
+}
+
+advisor::Goals MainWindow::goals() const {
+  return {goal_btn_[0]->isChecked(), goal_btn_[1]->isChecked(), goal_btn_[2]->isChecked()};
+}
+
+void MainWindow::update_advise_state() {
+  if (!btn_advise_) return;
+  btn_advise_->setEnabled(source_.has_value() && !busy_ && goals().count() == 2);
+}
+
+void MainWindow::run_advisor() {
+  if (!source_ || busy_ || !model_ || goals().count() != 2) return;
+  auto mesh = source_->mesh;
+  auto model = model_;
+  advisor::Request rq;
+  rq.current = source_->print;
+  rq.current.settings.filament = slicer::filament_preset(job_.material);
+  rq.job = job_;
+  rq.goals = goals();
+  rq.max_elems = 20000;
+  auto prog = progress_cb();
+  start_work(
+      [this, mesh, model, rq, prog]() mutable -> std::function<void()> {
+        // своя сцена: окно в это время может перерисовывать свою
+        const app::Scene scene(*model);
+        rq.mesh = &mesh->mesh;
+        rq.model = model.get();
+        rq.scene = &scene;
+        auto res = std::make_shared<const advisor::Result>(
+            advisor::advise(rq, [prog](double f, std::string_view t) { prog("advise", f, t); }));
+        return [this, mesh, res] {
+          if (!source_ || source_->mesh != mesh) return;  // пока подбирали, открыли другую деталь
+          advice_ = res;
+          render_advice();
+          // показать итоги подбора: после того как панель пересчитает высоту
+          for (int ms : {80, 260})
+            QTimer::singleShot(ms, this, [this] {
+              if (!advise_summary_->isVisible()) return;
+              const int y = advise_summary_->mapTo(panel_scroll_->widget(), QPoint(0, 0)).y();
+              panel_scroll_->verticalScrollBar()->setValue(std::max(0, y - 60));
+            });
+          toast(res->ranked.empty() ? QString("Подобрать не удалось.")
+                                    : "Подбор готов: " + qs(res->ranked.front().orientation) + ", " +
+                                          qs(res->ranked.front().settings) + ".");
+        };
+      },
+      "Подбор печати");
+}
+
+void MainWindow::render_advice() {
+  refit_panel();
+  clear_layout(advise_list_);
+  if (!advice_ || advice_->ranked.empty()) {
+    advise_summary_->hide();
+    return;
+  }
+  advise_summary_->setText(qs(advice_->summary));
+  advise_summary_->show();
+  const std::size_t n = std::min<std::size_t>(3, advice_->ranked.size());
+  for (std::size_t k = 0; k < n; ++k) {
+    const auto& c = advice_->ranked[k];
+    auto* card = new QFrame;
+    card->setObjectName("item");
+    auto* v = new QVBoxLayout(card);
+    v->setContentsMargins(12, 10, 12, 10);
+    v->setSpacing(4);
+    auto* head = hbox(8);
+    QString title = qs(c.orientation);
+    if (!title.isEmpty()) title[0] = title[0].toUpper();
+    head->addWidget(make_label((k == 0 ? QString("Рекомендация · ") : QString("Вариант %1 · ").arg(k + 1)) + title,
+                               "itemTitle"),
+                    1);
+    auto* apply = make_button("Применить", "sm");
+    apply->setToolTip("Взять это положение и настройки и нарезать деталь заново");
+    connect(apply, &QPushButton::clicked, this, [this, k] { apply_candidate(k); });
+    head->addWidget(apply);
+    v->addLayout(head);
+    v->addWidget(make_label(qs(c.settings), "muted"));
+    QString m;
+    if (c.sf) m += "запас " + fmtq(*c.sf, 2) + " · ";
+    const int min = std::max(1, static_cast<int>(std::lround(c.time_s / 60)));
+    m += (min >= 60 ? QString("%1 ч %2 мин").arg(min / 60).arg(min % 60) : QString("%1 мин").arg(min)) + " · " +
+         fmtq(c.grams, 0) + " г";
+    if (c.support_g > 0) m += " (поддержки " + fmtq(c.support_g, 1) + " г)";
+    v->addWidget(make_label(m));
+    if (!c.printable)
+      v->addWidget(make_warn("В таком положении деталь плохо печатается — см. замечания после нарезки."));
+    else if (!c.feasible && c.sf)
+      v->addWidget(make_warn("Запаса меньше нужного."));
+    advise_list_->addWidget(card);
+  }
+}
+
+void MainWindow::apply_candidate(std::size_t k) {
+  if (!advice_ || k >= advice_->ranked.size() || busy_ || !source_) return;
+  const auto& c = advice_->ranked[k];
+  print_ui_ = c.print;
+  render_print_settings();
+  toast("Применено: " + qs(c.orientation) + ", " + qs(c.settings) + ". Нарезаю заново.");
+  reslice();
 }
 
 void MainWindow::render_material() {
@@ -1962,6 +2117,7 @@ void MainWindow::set_busy(bool busy) {
   busy_ = busy;
   for (auto* b : {btn_open_, btn_example_, btn_open_job_, btn_rebuild_}) b->setEnabled(!busy);
   update_run_state();
+  update_advise_state();
 }
 
 void MainWindow::show_progress(bool on, double frac, const QString& text) {
@@ -2204,6 +2360,8 @@ void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QS
   } else if (keep_job && old_scene) {
     app::remap_faces(job_, *old_scene, *scene_);
   } else if (!keep_job) {
+    advice_.reset();
+    render_advice();
     job_ = app::new_job();
     job_title_.clear();
     job_subtitle_.clear();
@@ -2633,6 +2791,32 @@ void MainWindow::continue_script() {
       if (busy_) return;
     } else {
       toast("Поворачивать можно только модель (STL, 3MF), не G-code.", true);
+    }
+  }
+  if (!script_.advise.empty()) {
+    const auto g = advisor::goals_from_key(script_.advise);
+    script_.advise.clear();
+    if (!g) {
+      toast("--advise: нужны две цели из speed, economy, strength", true);
+    } else {
+      goal_order_.clear();
+      const bool on[3] = {g->speed, g->economy, g->strength};
+      for (int k = 0; k < 3; ++k) {
+        const QSignalBlocker block(goal_btn_[static_cast<std::size_t>(k)]);
+        goal_btn_[static_cast<std::size_t>(k)]->setChecked(on[k]);
+        if (on[k]) goal_order_.push_back(k);
+      }
+      run_advisor();
+      if (busy_) return;
+    }
+  }
+  if (script_.apply_advice) {
+    script_.apply_advice = false;
+    if (advice_ && !advice_->ranked.empty()) {
+      apply_candidate(0);
+      if (busy_) return;
+    } else {
+      toast("Нечего применять: подбор не выполнен.", true);
     }
   }
   if (script_.run) {
