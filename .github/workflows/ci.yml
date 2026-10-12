@@ -99,7 +99,15 @@ jobs:
           fi
 
       - name: Тесты
-        run: ctest --preset ${{ matrix.preset }}
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! ctest --preset ${{ matrix.preset }} --output-on-failure 2>&1 | tee tests.log; then
+            # логи CI не скачиваются — проваленные проверки выносим в аннотации
+            grep -E "FAILED|failed|error" tests.log | head -25 |
+              while IFS= read -r l; do echo "::error title=Тесты::${l:0:900}"; done
+            exit 1
+          fi
 
       - name: kika.exe запускается на чистой Windows
         if: matrix.preset == 'ci-windows'
