@@ -38,7 +38,10 @@ QString minutes(double s) {
 }
 
 // Положить в очередь событий приложения (живёт дольше любого окна).
-void post(std::function<void()> fn) { QMetaObject::invokeMethod(qApp, std::move(fn), Qt::QueuedConnection); }
+void post(std::function<void()> fn) {
+  // окно программы могли закрыть, пока шёл сетевой запрос
+  if (auto* app = QCoreApplication::instance()) QMetaObject::invokeMethod(app, std::move(fn), Qt::QueuedConnection);
+}
 
 }  // namespace
 
