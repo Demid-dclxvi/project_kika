@@ -81,7 +81,7 @@ kika run задание.json              G-code берётся из поля "g
 ```json
 {
   "model": "bracket_L.3mf",
-  "print": {"printer": "sparkx_i7", "layer_height": 0.2, "walls": 3, "infill": 25, "pattern": "grid",
+  "print": {"printer": "qidi_q2", "layer_height": 0.2, "walls": 3, "infill": 25, "pattern": "grid",
             "rotate": [90, 0, 0]},
   "material": "PETG",
   …
@@ -90,8 +90,8 @@ kika run задание.json              G-code берётся из поля "g
 
 | Поле `print` | Что это | По умолчанию |
 | --- | --- | --- |
-| `printer` | `sparkx_i7` (Creality SPARKX i7, стол 260 × 260 × 255 мм) или `generic_220` (220 × 220 × 250 мм, Marlin) | `sparkx_i7` |
-| `filament` | пластик для температур и обдува в G-code: PLA, PETG, ABS, ASA, PC, PA, TPU, …-CF | тип пластика из `material` |
+| `printer` | `qidi_q2` (QIDI Q2, Klipper, стол 270 × 270 × 256 мм), `sparkx_i7` (Creality SPARKX i7, 260 × 260 × 255 мм, Marlin) или `generic_220` (220 × 220 × 250 мм, Marlin); с изменениями — `{"base": "qidi_q2", "z_hop": 0.2, …}` | `qidi_q2` |
+| `filament` | пластик для температур, обдува и расхода в G-code: PLA, PETG, ABS, ASA, PC, PA, TPU, …-CF; с изменениями — `{"base": "PETG", "nozzle_temp": 245, …}` | тип пластика из `material` |
 | `layer_height`, `first_layer_height` | высота слоя и первого слоя, мм | 0,2; первый — как остальные |
 | `line_width` | ширина линии, мм | 0,42 |
 | `walls` | число стенок (периметров) | 2 |
@@ -104,6 +104,8 @@ kika run задание.json              G-code берётся из поля "g
 | `support` | поддержки: `none` — нет, `normal` — обычные, `tree` — древовидные | `none` |
 | `support_angle` | нависание положе этого угла к горизонтали получает поддержку, градусы (5–85) | 40 |
 | `support_on_bed_only` | поддержки только от стола, не стоящие на самой детали | `false` |
+
+Кроме перечисленных, в `print` можно задать любую настройку печати (скорости `speed_*`, ускорения `accel_*`, `brim_width`, `seam`, `outer_wall_first`, `skirt_loops`, зазоры поддержек и другие), а в объектах `printer` и `filament` — любую настройку принтера и пластика. Полный список с пределами и значениями по умолчанию — `kika settings` (или `kika settings --json`). Неизвестный ключ или значение вне пределов — ошибка с объяснением.
 
 Рисунки заполнения (`pattern`). Плотность у всех — доля объёма пластика в области заполнения: 20 % у гироида и у сетки — одинаковое количество пластика.
 

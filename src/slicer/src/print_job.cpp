@@ -122,11 +122,11 @@ Value print_to_json(const PrintJob& p) {
   const Settings defaults;
   for (const auto& f : fields()) {
     if (f.section != Section::Process) continue;
-    bool main = false;
-    for (const char* k : kMainKeys) main = main || f.key == k;
-    if (s.support != Support::None && (f.key == "support_angle" || f.key == "support_on_bed_only")) main = true;
+    bool always = false;
+    for (const char* k : kMainKeys) always = always || f.key == k;
+    if (s.support != Support::None && (f.key == "support_angle" || f.key == "support_on_bed_only")) always = true;
     const Value v = f.get(s);
-    if (main || json::dump(v) != json::dump(f.get(defaults))) o[f.key] = v;
+    if (always || json::dump(v) != json::dump(f.get(defaults))) o[f.key] = v;
   }
   if (p.rotate != std::array<double, 3>{0, 0, 0}) o["rotate"] = Value::array_of(p.rotate);
   return o;

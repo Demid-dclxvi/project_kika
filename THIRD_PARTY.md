@@ -7,7 +7,7 @@
 | Библиотека | Версия | Лицензия | Где | Как подключена |
 | --- | --- | --- | --- | --- |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.16.0 | BSL-1.0 | только тесты, в продукт не входит | статически |
-| [zlib](https://zlib.net) | 1.3.x (по baseline vcpkg) | Zlib | сжатие данных в HTML-отчёте (`src/report`), распаковка 3MF (`src/geometry`) | статически, через vcpkg |
+| [zlib](https://zlib.net) | 1.3.x (по baseline vcpkg) | Zlib | сжатие данных в HTML-отчёте (`src/report`), распаковка 3MF (`src/geometry`), миниатюры PNG в G-code (`src/slicer`) | статически, через vcpkg |
 | [Clipper2](https://github.com/AngusJohnson/Clipper2) | 2.0.1 (по baseline vcpkg) | BSL-1.0 | контуры слоёв в своём слайсере (`src/slicer`): объединение, смещение, пересечение | статически, через vcpkg |
 | [three.js](https://threejs.org) | r149 | MIT | 3D-просмотр в HTML-отчёте | файл `src/report/web/vendor/three.min.js` встраивается в программу и в каждый отчёт; уведомление об авторских правах — в начале файла, текст лицензии — `three.LICENSE.txt` рядом |
 | [Qt](https://www.qt.io) — модули Core, Gui, Widgets, OpenGL, OpenGLWidgets | 6.8 (Windows), от 6.4 (Linux) | LGPL-3.0 | окно `kika-gui` | динамически: библиотеки Qt6*.dll лежат рядом с программой отдельными файлами; модули под GPL и коммерческие не используются |
@@ -42,7 +42,8 @@ Qt подключается не через vcpkg: LGPL требует дина�
 
 | Что | Лицензия | Чем заменяем |
 | --- | --- | --- |
-| OrcaSlicer, PrusaSlicer (код) | AGPL-3.0 | вызов отдельной программой; свой слайсер |
+| OrcaSlicer, PrusaSlicer, QIDI Studio (код и профили) | AGPL-3.0 | свой слайсер; профиль QIDI Q2 и его стартовый код — свои, по параметрам макроса PRINT_START прошивки принтера |
+| Moonraker (код) | GPL-3.0 | свой клиент его HTTP API (`src/printer`); сам Moonraker запускался только для проверки, в программу не входит |
 | libbgcode | AGPL-3.0 | свой декодер .bgcode по открытой спецификации |
 | TetGen | AGPL-3.0 | fTetWild |
 | Triangle | только по договору с автором | fTetWild, Clipper2 |
@@ -52,3 +53,5 @@ lib3mf (BSD-2-Clause) была в плане для 3MF; оказалось до
 CLI11 (BSD-3-Clause) и nlohmann/json (MIT) использовались в первых версиях консольной программы; их заменили свой разбор параметров и JSON ядра (`kika::json`) — задания на расчёт читает само ядро, и ему не нужны сторонние библиотеки.
 
 Eigen (MPL-2.0) и AMGCL (MIT) были в плане для МКЭ; линейная алгебра и многосеточный решатель оказались небольшими и написаны в ядре (см. `docs/ARCHITECTURE.md`). Если понадобятся прямые разреженные решатели или собственные числа больших матриц — вернёмся к Eigen.
+
+Сеть (`src/printer`) — свой HTTP-клиент на сокетах системы (Winsock на Windows, POSIX на остальных): принтер в локальной сети, TLS не нужен, поэтому без libcurl и подобных.

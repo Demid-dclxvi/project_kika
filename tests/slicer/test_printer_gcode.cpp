@@ -119,11 +119,11 @@ TEST_CASE("Печать: G-code для QIDI Q2 — PRINT_START, слои, раз
   // миниатюры: настоящие PNG нужного размера
   std::map<int, int> thumbs;
   {
-    const std::regex begin(R"(; thumbnail begin (\d+)x(\d+) (\d+))");
+    const std::regex rx_begin(R"(; thumbnail begin (\d+)x(\d+) (\d+))");
     const auto ls = lines_of(g);
     for (std::size_t i = 0; i < ls.size(); ++i) {
       std::smatch mt;
-      if (!std::regex_match(ls[i], mt, begin)) continue;
+      if (!std::regex_match(ls[i], mt, rx_begin)) continue;
       const int w = std::stoi(mt[1]), h = std::stoi(mt[2]);
       const std::size_t len = std::stoul(mt[3]);
       std::string b64;
@@ -144,7 +144,7 @@ TEST_CASE("Печать: G-code для QIDI Q2 — PRINT_START, слои, раз
       CHECK(rlen == raw.size());
       int opaque = 0;
       for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) opaque += raw[static_cast<std::size_t>(y) * (w * 4 + 1) + 1 + x * 4 + 3] != 0;
+        for (int x = 0; x < w; ++x) opaque += raw[static_cast<std::size_t>(y) * (w * 4 + 1) + 1 + x * 4 + 3] != 0 ? 1 : 0;
       CHECK(opaque > w * h / 10);
       thumbs[w] = h;
       i = j;

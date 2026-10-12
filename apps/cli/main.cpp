@@ -30,6 +30,7 @@
 #include "kika/report/report.hpp"
 #include "kika/printer/moonraker.hpp"
 #include "kika/slicer/print_job.hpp"
+#include "kika/slicer/profiles.hpp"
 #include "kika/util/json.hpp"
 #include "kika/version.hpp"
 
@@ -557,6 +558,77 @@ int cmd_printer(const std::optional<std::string>& address, const Args& a) {
 }
 
 // ---------------------------------------------------------------------------
+// kika settings: все настройки нарезки
+
+int cmd_settings(bool as_json) {
+  const kika::slicer::Settings d;
+  auto numg = [](double v) {
+    std::string t = std::format("{:g}", v);
+    for (char& c : t)
+      if (c == '.') c = ',';
+    return t;
+  };
+  if (as_json) {
+    Value arr = Value::array();
+    for (const auto& f : kika::slicer::fields()) {
+      Value o = Value::object();
+      o["section"] = std::string(kika::slicer::section_key(f.section));
+      o["group"] = f.group;
+      o["key"] = f.key;
+      o["label"] = f.label;
+      o["unit"] = f.unit;
+      o["tip"] = f.tip;
+      if (f.kind == kika::slicer::FieldKind::Number || f.kind == kika::slicer::FieldKind::Integer) {
+        o["min"] = f.lo;
+        o["max"] = f.hi;
+      }
+      if (!f.choices.empty()) {
+        Value ch = Value::array();
+        for (const auto& c : f.choices) ch.push_back(c.key);
+        o["choices"] = ch;
+      }
+      o["default"] = f.get(d);
+      arr.push_back(o);
+    }
+    std::cout << kika::json::dump(arr, 2) << "\n";
+    return 0;
+  }
+  kika::slicer::Section sec = kika::slicer::Section::Printer;
+  std::string group;
+  bool first = true;
+  for (const auto& f : kika::slicer::fields()) {
+    if (first || f.section != sec) {
+      sec = f.section;
+      group.clear();
+      std::cout << (first ? "" : "\n") << "== " << kika::slicer::section_name(sec)
+                << (sec == kika::slicer::Section::Process ? " (ключи поля print)"
+                                                          : std::format(" (print.{}: {{\"base\": …, ключ: значение}})",
+                                                                        kika::slicer::section_key(sec)))
+                << "\n";
+      first = false;
+    }
+    if (f.group != group) {
+      group = f.group;
+      std::cout << "  " << group << "\n";
+    }
+    if (f.kind == kika::slicer::FieldKind::Code) {
+      std::cout << std::format("    {:<28} {}\n", f.key, f.label);
+      continue;
+    }
+    std::string range;
+    if (f.kind == kika::slicer::FieldKind::Number || f.kind == kika::slicer::FieldKind::Integer)
+      range = std::format("{}…{}", numg(f.lo), numg(f.hi));
+    else if (f.kind == kika::slicer::FieldKind::Choice)
+      for (const auto& c : f.choices) range += (range.empty() ? "" : ", ") + c.key;
+    else if (f.kind == kika::slicer::FieldKind::Bool)
+      range = "true, false";
+    std::cout << std::format("    {:<28} {} = {}{}\n", f.key, f.label, kika::slicer::field_text(f, d),
+                             range.empty() ? std::string() : "  [" + range + "]");
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // kika segments
 
 int cmd_segments(const std::string& file_arg, const std::optional<std::string>& out_arg) {
@@ -863,6 +935,8 @@ void print_usage() {
             << "                                            состояние; --pause, --resume, --cancel\n"
             << "  kika send деталь.gcode --printer АДРЕС    отправить G-code на принтер; --start — печатать,\n"
             << "                                            --name имя на принтере, --key ключ API Moonraker\n"
+            << "  kika settings [--json]                    все настройки нарезки: ключи, пределы, значения\n"
+            << "                                            по умолчанию (для --set и поля print задания)\n"
             << "  kika materials                            встроенная база материалов\n"
             << "  kika segments деталь.gcode -o отрезки.csv все отрезки экструзии в CSV\n"
             << "  kika --version                            версия\n\n"
@@ -1054,7 +1128,7 @@ int run_main(const std::vector<std::string>& args) {
     return finish(0);
   }
   if (cmd != "info" && cmd != "segments" && cmd != "run" && cmd != "materials" && cmd != "slice" && cmd != "advise" &&
-      cmd != "printer" && cmd != "send")
+      cmd != "printer" && cmd != "send" && cmd != "settings")
     if (auto code = run_dropped_files(args)) return finish(*code);
 
   try {
@@ -1083,6 +1157,10 @@ int run_main(const std::vector<std::string>& args) {
       std::optional<long long> re;
       if (a.value("--refine-elems")) re = static_cast<long long>(parse_number(*a.value("--refine-elems"), "--refine-elems"));
       return finish(cmd_advise(a.positional[0], *goals, me, re, a.value("--json"), a.value("--save-job"), variant));
+    }
+    if (cmd == "settings") {
+      const auto a = parse_args(args, 2, {{{"--json"}, false}});
+      return finish(cmd_settings(a.flag("--json")));
     }
     if (cmd == "printer") {
       const auto a = parse_args(args, 2, {{{"--key"}, true}, {{"--pause"}, false}, {{"--resume"}, false}, {{"--cancel"}, false}});

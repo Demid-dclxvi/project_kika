@@ -782,17 +782,17 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
       // шов: на наружном контуре острова; остальные стенки начинаются рядом с ним
       Pt seam_pt = pos;
       if (!walls.empty() && s.seam != Seam::Nearest) {
-        const Path64* main = nullptr;
+        const Path64* contour = nullptr;
         double amax = 0;
         for (const auto& p : walls[0]) {
           const double a = Clipper2Lib::Area(p);
-          if (a > amax) amax = a, main = &p;
+          if (a > amax) amax = a, contour = &p;
         }
-        if (main) {
-          const auto pts = to_pts(*main);
+        if (contour) {
+          const auto pts = to_pts(*contour);
           Pt ref = rear;
           if (s.seam == Seam::Aligned) {
-            const auto bb = Clipper2Lib::GetBounds(*main);
+            const auto bb = Clipper2Lib::GetBounds(*contour);
             const Pt c{mm((bb.left + bb.right) / 2), mm((bb.top + bb.bottom) / 2)};
             double rd = 1e300;
             for (const auto& ps : prev_seams)
