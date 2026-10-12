@@ -2,7 +2,7 @@
 
 find_package(Clipper2 CONFIG REQUIRED)
 
-add_library(kika_slicer src/presets.cpp src/slicer.cpp src/print_job.cpp)
+add_library(kika_slicer src/presets.cpp src/common.cpp src/infill.cpp src/support.cpp src/slicer.cpp src/print_job.cpp)
 add_library(kika::slicer ALIAS kika_slicer)
 target_include_directories(kika_slicer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(kika_slicer PUBLIC kika::geometry kika::core PRIVATE Clipper2::Clipper2)

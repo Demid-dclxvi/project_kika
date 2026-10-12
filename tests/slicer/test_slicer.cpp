@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <map>
 #include <numbers>
 
 #include <catch2/catch_test_macros.hpp>
@@ -11,6 +12,7 @@
 #include "kika/gcode/parser.hpp"
 #include "kika/geometry/import.hpp"
 #include "kika/geometry/mesh.hpp"
+#include "kika/material/material.hpp"
 #include "kika/slicer/print_job.hpp"
 #include "kika/slicer/slicer.hpp"
 #include "kika/util/json.hpp"
@@ -272,4 +274,166 @@ TEST_CASE("Слайсер: L-кронштейн из 3MF в разных пол�
     if (rot == std::array<double, 3>{0, 0, 0}) CHECK(r.warnings.empty());
     if (rot == std::array<double, 3>{0, 90, 0}) CHECK(has_overhang());
   }
+}
+
+TEST_CASE("Слайсер: рисунки заполнения — плотность по объёму, границы, ключи как в Orca", "[slicer]") {
+  // брусок 40 × 40 × 12 без верха и низа, одна стенка: всё внутри — разреженное заполнение
+  auto m = box(40, 40, 12);
+  m.transform(kika::geometry::place_on_bed(m, 130, 130));
+  const double sp = 0.42 - 0.2 * (1 - std::numbers::pi / 4), inset = 0.21 + sp / 2;
+  const double sparse_volume = (40 - 2 * inset) * (40 - 2 * inset) * 12;
+  for (const auto pat : kika::slicer::patterns()) {
+    const std::string key(kika::slicer::pattern_key(pat));
+    INFO(key);
+    REQUIRE(kika::slicer::pattern_from_key(key) == pat);
+    CHECK(!kika::slicer::pattern_name(pat).empty());
+    for (const double dens : {0.1, 0.25}) {
+      kika::slicer::Settings s;
+      s.wall_loops = 1;
+      s.top_layers = 0;
+      s.bottom_layers = 0;
+      s.skirt = false;
+      s.infill_overlap = 0;
+      s.infill_density = dens;
+      s.pattern = pat;
+      const auto r = kika::slicer::slice(m, s);
+      const auto tp = kika::gcode::parse(r.gcode);
+      CHECK(tp.info.infill_pattern == key);
+      double v = 0;
+      for (const auto& sg : tp.segments) {
+        if (sg.role != kika::gcode::Role::Sparse) continue;
+        v += sg.volume;
+        // заполнение не выходит за стенку
+        for (const double x : {sg.x0, sg.x1}) REQUIRE((x > 110 + inset - 0.01 && x < 150 - inset + 0.01));
+        for (const double y : {sg.y0, sg.y1}) REQUIRE((y > 110 + inset - 0.01 && y < 150 - inset + 0.01));
+      }
+      // доля объёма — та, что задана (у треугольников на 10 % — до 6 %: короткие обрезки у края)
+      CHECK_THAT(v / sparse_volume, WithinRel(dens, 0.06));
+      // для расчёта у рисунка есть своя вертикальная жёсткость (не значение «по умолчанию»)
+      CHECK(kika::material::infill_kz(key) != kika::material::infill_kz("неизвестный"));
+    }
+  }
+  // старые названия из заданий и G-code других слайсеров
+  CHECK(kika::slicer::pattern_from_key("zig-zag") == kika::slicer::Pattern::Rectilinear);
+  CHECK(kika::slicer::pattern_from_key("3D Honeycomb") == kika::slicer::Pattern::Honeycomb3D);
+  CHECK(kika::slicer::pattern_from_key("trihexagon") == kika::slicer::Pattern::TriHexagon);
+  CHECK(!kika::slicer::pattern_from_key("соты"));
+}
+
+namespace {
+
+// Доля точек поддержки, под которыми на слое ниже нет ни поддержки, ни детали ближе tol.
+double floating_fraction(const kika::gcode::Toolpaths& tp, double tol) {
+  std::map<long long, std::vector<std::array<double, 2>>> pts;
+  auto zk = [](double z) { return std::llround(z * 1000); };
+  auto sample = [](const kika::gcode::Segment& s, double step, auto&& f) {
+    const double l = std::hypot(s.x1 - s.x0, s.y1 - s.y0);
+    const int n = std::max(1, static_cast<int>(std::ceil(l / step)));
+    for (int k = 0; k <= n; ++k) f(s.x0 + (s.x1 - s.x0) * k / n, s.y0 + (s.y1 - s.y0) * k / n);
+  };
+  for (const auto* v : {&tp.segments, &tp.supports})
+    for (const auto& s : *v) sample(s, 0.5, [&](double x, double y) { pts[zk(s.z)].push_back({x, y}); });
+  long long total = 0, bad = 0;
+  for (const auto& s : tp.supports) {
+    const auto it = pts.find(zk(s.z));
+    if (it == pts.begin()) continue;
+    const auto& below = std::prev(it)->second;
+    sample(s, 1.0, [&](double x, double y) {
+      ++total;
+      bool ok = false;
+      for (const auto& p : below)
+        if ((p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) <= tol * tol) {
+          ok = true;
+          break;
+        }
+      bad += ok ? 0 : 1;
+    });
+  }
+  return total ? static_cast<double>(bad) / static_cast<double>(total) : 0.0;
+}
+
+bool has_warning(const kika::slicer::Result& r, const char* part) {
+  for (const auto& w : r.warnings)
+    if (w.find(part) != std::string::npos) return true;
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("Слайсер: поддержки обычные и древовидные под нависанием", "[slicer][support]") {
+  // уголок на боку: бывшая стенка 40 × 30 мм висит над столом на высоте 55 мм
+  const auto im = kika::geometry::load_model(std::filesystem::path(KIKA_SOURCE_DIR) / "examples/bracket_L.3mf");
+  kika::slicer::PrintJob p;
+  p.rotate = {0, 90, 0};
+  const auto mesh = kika::slicer::placed(im.mesh, p);
+  kika::gcode::ParseOptions keep;
+  keep.keep_supports = true;
+
+  const auto none = kika::slicer::slice(mesh, p.settings);
+  CHECK(has_warning(none, "Нависание без опоры"));
+  CHECK(none.support_g == 0);
+  const double part_volume = kika::gcode::parse(none.gcode).total_volume();
+
+  double grams[2] = {0, 0};
+  for (const auto kind : {kika::slicer::Support::Normal, kika::slicer::Support::Tree}) {
+    INFO(kika::slicer::support_key(kind));
+    p.settings.support = kind;
+    const auto r = kika::slicer::slice(mesh, p.settings);
+    CHECK(r.warnings.empty());
+    CHECK(r.support_g > 1);
+    CHECK(r.print_time_s > none.print_time_s);
+    grams[kind == kika::slicer::Support::Tree] = r.support_g;
+    // в расчёт поддержки не попадают: деталь та же
+    const auto tp = kika::gcode::parse(r.gcode);
+    CHECK(tp.supports.empty());
+    CHECK_THAT(tp.total_volume(), WithinRel(part_volume, 1e-9));
+    // для показа их можно сохранить; ни одна линия поддержки не висит в воздухе
+    const auto tk = kika::gcode::parse(r.gcode, keep);
+    REQUIRE(tk.supports.size() > 100);
+    CHECK(floating_fraction(tk, 2.0) < 0.002);
+    // поддержки не заходят в деталь: по высоте — до низа нависания, по X — не левее стенки + зазор
+    for (const auto& s : tk.supports) REQUIRE(s.z < 55.0 - 0.2 + 1e-6);
+  }
+  // деревья берут меньше пластика, чем сплошная колонна
+  CHECK(grams[1] < 0.7 * grams[0]);
+}
+
+TEST_CASE("Слайсер: поддержки «только от стола» не встают на деталь", "[slicer][support]") {
+  // брусок 30 × 10 × 20 с туннелем 10 × 6 мм по Y: свод туннеля висит над его полом
+  TriangleMesh m = box(30, 10, 5);
+  m.append(box(30, 10, 9, 0, 0, 11));
+  m.append(box(10, 10, 6, 0, 0, 5));
+  m.append(box(10, 10, 6, 20, 0, 5));
+  m.transform(kika::geometry::place_on_bed(m, 130, 130));
+  kika::gcode::ParseOptions keep;
+  keep.keep_supports = true;
+  kika::slicer::Settings s;
+  s.support = kika::slicer::Support::Normal;
+  const auto r = kika::slicer::slice(m, s);
+  CHECK(r.warnings.empty());
+  const auto tp = kika::gcode::parse(r.gcode, keep);
+  REQUIRE(!tp.supports.empty());
+  // поддержка — только в туннеле: стоит на его полу (z > 5 + зазор) и ниже свода
+  for (const auto& sg : tp.supports) {
+    REQUIRE(sg.z > 5.0 + 0.2);
+    REQUIRE(sg.z < 11.0 - 0.2 + 1e-6);
+    REQUIRE((sg.x0 > 125 - 1e-6 && sg.x0 < 135 + 1e-6));
+  }
+  s.support_on_bed_only = true;
+  const auto rb = kika::slicer::slice(m, s);
+  CHECK(kika::gcode::parse(rb.gcode, keep).supports.empty());
+  CHECK(has_warning(rb, "только от стола"));
+}
+
+TEST_CASE("Слайсер: поддержки в поле print задания", "[slicer][support]") {
+  const auto j = kika::json::parse(R"({"support": "tree", "support_angle": 50, "support_on_bed_only": true})");
+  const auto p = kika::slicer::print_from_json(&j, "PLA");
+  CHECK(p.settings.support == kika::slicer::Support::Tree);
+  CHECK(p.settings.support_angle == 50);
+  CHECK(p.settings.support_on_bed_only);
+  const auto back = kika::slicer::print_to_json(p);
+  CHECK(back.find("support")->as_string() == "tree");
+  const auto bad = kika::json::parse(R"({"support": "везде"})");
+  CHECK_THROWS_AS(kika::slicer::print_from_json(&bad, "PLA"), kika::analysis::JobError);
+  CHECK(kika::slicer::print_from_json(nullptr, "PLA").settings.support == kika::slicer::Support::None);
 }

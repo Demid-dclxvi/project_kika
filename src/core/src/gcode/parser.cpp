@@ -417,6 +417,7 @@ Toolpaths parse(std::string_view text, const ParseOptions& options) {
   bool started = !has_layer_markers;
   bool finished = false;
   Role cur_role = Role::Unknown;
+  bool cur_support = false;  // текущая линия — поддержка
   std::optional<double> cur_height;
   std::int32_t layer_idx = -1;
   bool in_wipe = false;
@@ -426,6 +427,10 @@ Toolpaths parse(std::string_view text, const ParseOptions& options) {
   auto emit = [&](double xa, double ya, double xb, double yb, double zz, double dvol) {
     if (!started || finished || cur_role == Role::Excluded || in_wipe) {
       excluded_vol += dvol;
+      if (options.keep_supports && cur_support && started && !finished && !in_wipe) {
+        const double h = (cur_height && *cur_height != 0.0) ? *cur_height : info.layer_height.value_or(0.2);
+        tp.supports.push_back(Segment{xa, ya, xb, yb, zz, h, dvol, Role::Excluded, layer_idx});
+      }
       return;
     }
     const double h = (cur_height && *cur_height != 0.0) ? *cur_height : -1.0;
@@ -445,8 +450,10 @@ Toolpaths parse(std::string_view text, const ParseOptions& options) {
         const auto after_colon = [&cs]() { return cs.substr(cs.find(':') + 1); };
         if (up.starts_with("TYPE:") || up.starts_with("FEATURE:")) {
           cur_role = classify_role(after_colon());
+          cur_support = cur_role == Role::Excluded && up.find("SUPPORT") != std::string::npos;
         } else if (up.starts_with("FEATURE ")) {  // Simplify3D
           cur_role = classify_role(cs.substr(8));
+          cur_support = cur_role == Role::Excluded && up.find("SUPPORT") != std::string::npos;
         } else if (up == "LAYER_CHANGE" || up == "CHANGE_LAYER" || up.starts_with("LAYER:") ||
                    (up.starts_with("LAYER ") && up.find("Z =") != std::string::npos)) {
           if (up.starts_with("LAYER:") && info.slicer == "Cura") {

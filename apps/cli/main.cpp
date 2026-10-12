@@ -320,7 +320,8 @@ const std::vector<Option> kSliceOptions = {
     {{"-o", "--out"}, true},  {{"--printer"}, true},     {{"--filament"}, true},     {{"--layer"}, true},
     {{"--first-layer"}, true}, {{"--line-width"}, true}, {{"--walls"}, true},        {{"--top"}, true},
     {{"--bottom"}, true},     {{"--infill"}, true},      {{"--pattern"}, true},      {{"--angle"}, true},
-    {{"--rotate"}, true},     {{"--no-skirt"}, false},   {{"-q", "--quiet"}, false}};
+    {{"--rotate"}, true},     {{"--no-skirt"}, false},   {{"--support"}, true},      {{"--support-angle"}, true},
+    {{"--bed-only"}, false},  {{"-q", "--quiet"}, false}};
 
 // Поле "print" задания из параметров командной строки.
 Value print_from_args(const Args& a) {
@@ -348,6 +349,9 @@ Value print_from_args(const Args& a) {
     pr["rotate"] = r;
   }
   if (a.flag("--no-skirt")) pr["skirt"] = false;
+  if (auto v = a.value("--support")) pr["support"] = *v;
+  num_opt("--support-angle", "support_angle");
+  if (a.flag("--bed-only")) pr["support_on_bed_only"] = true;
   return pr;
 }
 
@@ -489,9 +493,13 @@ std::string slice_model(const fs::path& model_path, const Value* print, const st
   for (const auto& w : im.warnings) std::cout << "  ⚠ " << w << "\n";
   const auto pj = kika::slicer::print_from_json(print, material);
   const auto& s = pj.settings;
-  std::cout << std::format("  нарезка: {}, {}, слой {} мм, стенок {}, заполнение {}% {}\n", s.printer.name, s.filament.type,
-                           num(s.layer_height, 2), s.wall_loops, num(s.infill_density * 100, 0),
-                           kika::slicer::pattern_key(s.pattern))
+  std::cout << std::format("  нарезка: {}, {}, слой {} мм, стенок {}, заполнение {}% {}{}\n", s.printer.name,
+                           s.filament.type, num(s.layer_height, 2), s.wall_loops, num(s.infill_density * 100, 0),
+                           kika::slicer::pattern_key(s.pattern),
+                           s.support == kika::slicer::Support::None
+                               ? std::string()
+                               : std::format(", поддержки {}{}", kika::slicer::support_key(s.support),
+                                             s.support_on_bed_only ? " (от стола)" : ""))
             << std::flush;
   kika::slicer::Progress prog;
   if (!quiet) {
@@ -505,9 +513,10 @@ std::string slice_model(const fs::path& model_path, const Value* print, const st
   }
   const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, pj), s, prog, im.name);
   for (const auto& w : r.warnings) std::cout << "  ⚠ " << w << "\n";
-  std::cout << std::format("  слоёв {}, пруток {} м ({} г), печать примерно {} ч {} мин\n", r.layers,
-                           num(r.filament_mm / 1000, 2), num(r.filament_g, 0), static_cast<int>(r.print_time_s / 3600),
-                           static_cast<int>(std::fmod(r.print_time_s, 3600) / 60));
+  std::cout << std::format("  слоёв {}, пруток {} м ({} г{}), печать примерно {} ч {} мин\n", r.layers,
+                           num(r.filament_mm / 1000, 2), num(r.filament_g, 0),
+                           r.support_g > 0 ? std::format(", из них поддержки {} г", num(r.support_g, 1)) : std::string(),
+                           static_cast<int>(r.print_time_s / 3600), static_cast<int>(std::fmod(r.print_time_s, 3600) / 60));
   if (gcode_out) {
     write_file(path_from_utf8(*gcode_out), r.gcode);
     std::cout << "  G-code: " << *gcode_out << "\n";
@@ -627,8 +636,12 @@ void print_usage() {
             << "      --filament PETG                       пластик (температуры, обдув)\n"
             << "      --layer 0.2 --first-layer 0.2         высота слоя и первого слоя, мм\n"
             << "      --walls 2 --top 5 --bottom 3          стенки, сплошные слои сверху и снизу\n"
-            << "      --infill 15 --pattern grid            заполнение, %; рисунок: grid, rectilinear,\n"
-            << "                                            triangles, line\n"
+            << "      --infill 15 --pattern grid            заполнение, %; рисунок: grid, gyroid, cubic,\n"
+            << "                                            honeycomb, 3dhoneycomb, triangles, tri-hexagon,\n"
+            << "                                            rectilinear, line, concentric\n"
+            << "      --support none | normal | tree        поддержки: нет, обычные, древовидные\n"
+            << "      --support-angle 40 --bed-only         нависание положе угла (к горизонтали) —\n"
+            << "                                            с поддержкой; поддержки только от стола\n"
             << "      --rotate 90,0,0                       повернуть деталь (градусы вокруг X, Y, Z)\n"
             << "  kika run [деталь.gcode] задание.json      расчёт прочности (вместо G-code — модель:\n"
             << "                                            поля \"model\" и \"print\" в задании)\n"

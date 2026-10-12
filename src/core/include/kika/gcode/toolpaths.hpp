@@ -78,6 +78,8 @@ struct BBox {
 struct Toolpaths {
   std::vector<Segment> segments;
   Info info;
+  // Отрезки поддержек (роль Excluded) — только с ParseOptions::keep_supports, для показа.
+  std::vector<Segment> supports;
 
   std::size_t size() const { return segments.size(); }
   double total_volume() const;

@@ -60,9 +60,24 @@ PrintJob print_from_json(const Value* print, const std::string& material) {
   s.infill_density = number(o, "infill", s.infill_density * 100, 0, 100) / 100.0;
   const std::string pat = text(o, "pattern", std::string(pattern_key(s.pattern)));
   const auto pk = pattern_from_key(pat);
-  if (!pk) throw JobError("print.pattern: неизвестный рисунок «" + pat + "», есть: grid, rectilinear, triangles, line");
+  if (!pk) {
+    std::string known;
+    for (Pattern x : patterns()) known += (known.empty() ? "" : ", ") + std::string(pattern_key(x));
+    throw JobError("print.pattern: неизвестный рисунок «" + pat + "», есть: " + known);
+  }
   s.pattern = *pk;
   s.infill_angle = number(o, "infill_angle", s.infill_angle, -360, 360);
+  {
+    const std::string sup = text(o, "support", "none");
+    const auto sk = support_from_key(sup);
+    if (!sk) throw JobError("print.support: неизвестный вид поддержек «" + sup + "», есть: none, normal, tree");
+    s.support = *sk;
+  }
+  s.support_angle = number(o, "support_angle", s.support_angle, 5, 85);
+  if (const Value* b = o.find("support_on_bed_only"); b && !b->is_null()) {
+    if (!b->is_bool()) throw JobError("print.support_on_bed_only: ожидается true или false");
+    s.support_on_bed_only = b->as_bool();
+  }
   if (const Value* sk = o.find("skirt"); sk && !sk->is_null()) {
     if (!sk->is_bool()) throw JobError("print.skirt: ожидается true или false");
     s.skirt = sk->as_bool();
@@ -92,6 +107,11 @@ Value print_to_json(const PrintJob& p) {
   o["pattern"] = std::string(pattern_key(s.pattern));
   o["infill_angle"] = s.infill_angle;
   o["skirt"] = s.skirt;
+  o["support"] = std::string(support_key(s.support));
+  if (s.support != Support::None) {
+    o["support_angle"] = s.support_angle;
+    o["support_on_bed_only"] = s.support_on_bed_only;
+  }
   if (p.rotate != std::array<double, 3>{0, 0, 0}) o["rotate"] = Value::array_of(p.rotate);
   return o;
 }

@@ -25,6 +25,8 @@ class ParseError : public std::runtime_error {
 struct ParseOptions {
   // Длина хорды при разбиении дуг G2/G3 на отрезки, мм.
   double arc_segment_length = 0.5;
+  // Сохранить отрезки поддержек в Toolpaths::supports (для показа; в расчёт они не идут).
+  bool keep_supports = false;
 };
 
 Toolpaths parse(std::string_view text, const ParseOptions& options = {});

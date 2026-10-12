@@ -8,7 +8,9 @@
 //   "walls": 2, "top_layers": 5, "bottom_layers": 3,
 //   "infill": 15, "pattern": "grid", "infill_angle": 45,  // заполнение в процентах
 //   "rotate": [90, 0, 0],                                 // градусы вокруг X, затем Y, затем Z
-//   "skirt": true
+//   "skirt": true,
+//   "support": "none",                                     // none, normal (обычные), tree (древовидные)
+//   "support_angle": 40, "support_on_bed_only": false     // угол нависания к горизонтали; только от стола
 // }
 
 #include <array>

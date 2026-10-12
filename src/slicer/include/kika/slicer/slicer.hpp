@@ -47,9 +47,36 @@ const Printer& default_printer();
 Filament filament_preset(std::string_view type);
 
 // Рисунок разреженного заполнения.
-enum class Pattern { Grid, Rectilinear, Triangles, Lines };
-std::string_view pattern_key(Pattern p);  // как в Orca: grid, rectilinear, triangles, line
+enum class Pattern {
+  Grid,         // сетка: два направления на каждом слое
+  Rectilinear,  // прямые: одно направление, через слой поперёк
+  Triangles,    // треугольники: три направления через 60°
+  Lines,        // линии одного направления
+  Gyroid,       // гироид: волнистые линии, в объёме — гладкая поверхность без слабого направления
+  Honeycomb,    // соты: шестиугольные призмы
+  Honeycomb3D,  // 3D-соты: зигзаги, сходящиеся через слой в замкнутые ячейки
+  Cubic,        // кубы, поставленные на вершину: три направления, сдвигаются с высотой
+  TriHexagon,   // тригексагон: треугольники и шестиугольники
+  Concentric,   // концентрическое: контуры, повторяющие форму слоя
+};
+// Ключ как в OrcaSlicer: grid, rectilinear, triangles, line, gyroid, honeycomb, 3dhoneycomb,
+// cubic, tri-hexagon, concentric.
+std::string_view pattern_key(Pattern p);
 std::optional<Pattern> pattern_from_key(std::string_view key);
+// Название по-русски — для окна и сообщений.
+std::string_view pattern_name(Pattern p);
+// Все рисунки по порядку.
+const std::vector<Pattern>& patterns();
+
+// Поддержки.
+enum class Support {
+  None,    // без поддержек
+  Normal,  // обычные: колонны линий под всей площадью нависания
+  Tree,    // древовидные: ветви от точек под нависанием сходятся в стволы до стола
+};
+std::string_view support_key(Support s);  // none, normal, tree
+std::optional<Support> support_from_key(std::string_view key);
+std::string_view support_name(Support s);
 
 struct Settings {
   Printer printer = default_printer();
@@ -72,6 +99,16 @@ struct Settings {
   double speed_first_layer = 30, speed_travel = 200;
   double retract_length = 0.8, retract_speed = 40;  // мм, мм/с
   double retract_min_travel = 2.0;                  // мм
+  // поддержки
+  Support support = Support::None;
+  double support_angle = 40;           // нависание положе этого угла к горизонтали — с поддержкой, градусы
+  bool support_on_bed_only = false;    // только от стола: на деталь поддержки не опираются
+  double support_z_gap = 0.2;          // зазор между поддержкой и деталью по высоте, мм
+  double support_xy_gap = 0.6;         // зазор до стенок детали, мм
+  int support_interface_layers = 2;    // плотных слоёв под деталью
+  double support_spacing = 2.5;        // шаг линий основы, мм
+  double support_interface_spacing = 0.5;
+  double speed_support = 100, speed_support_interface = 60;  // мм/с
 };
 
 // Ход нарезки: доля 0…1 и текст для человека. Бросить исключение — прервать.
@@ -83,6 +120,7 @@ struct Result {
   double filament_mm = 0;   // длина прутка, мм
   double filament_g = 0;
   double print_time_s = 0;  // оценка без ускорений
+  double support_g = 0;     // из них на поддержки, г
   std::vector<std::string> warnings;
 };
 

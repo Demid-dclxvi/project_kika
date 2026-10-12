@@ -100,23 +100,91 @@ Filament filament_preset(std::string_view type) {
   return f;
 }
 
+namespace {
+
+struct PatternInfo {
+  Pattern p;
+  const char* key;
+  const char* name;
+};
+
+constexpr PatternInfo kPatterns[] = {
+    {Pattern::Grid, "grid", "Сетка"},
+    {Pattern::Gyroid, "gyroid", "Гироид"},
+    {Pattern::Cubic, "cubic", "Кубы"},
+    {Pattern::Honeycomb, "honeycomb", "Соты"},
+    {Pattern::Honeycomb3D, "3dhoneycomb", "3D-соты"},
+    {Pattern::Triangles, "triangles", "Треугольники"},
+    {Pattern::TriHexagon, "tri-hexagon", "Тригексагон"},
+    {Pattern::Rectilinear, "rectilinear", "Прямые через слой"},
+    {Pattern::Lines, "line", "Линии"},
+    {Pattern::Concentric, "concentric", "Концентрическое"},
+};
+
+}  // namespace
+
 std::string_view pattern_key(Pattern p) {
-  switch (p) {
-    case Pattern::Grid: return "grid";
-    case Pattern::Rectilinear: return "rectilinear";
-    case Pattern::Triangles: return "triangles";
-    case Pattern::Lines: return "line";
-  }
+  for (const auto& x : kPatterns)
+    if (x.p == p) return x.key;
   return "grid";
 }
 
+std::string_view pattern_name(Pattern p) {
+  for (const auto& x : kPatterns)
+    if (x.p == p) return x.name;
+  return "Сетка";
+}
+
+const std::vector<Pattern>& patterns() {
+  static const std::vector<Pattern> list = [] {
+    std::vector<Pattern> v;
+    for (const auto& x : kPatterns) v.push_back(x.p);
+    return v;
+  }();
+  return list;
+}
+
 std::optional<Pattern> pattern_from_key(std::string_view key) {
-  std::string k(key);
-  for (char& c : k) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (k == "grid") return Pattern::Grid;
-  if (k == "rectilinear" || k == "zigzag") return Pattern::Rectilinear;
-  if (k == "triangles") return Pattern::Triangles;
-  if (k == "line" || k == "lines") return Pattern::Lines;
+  std::string k;
+  for (char c : key)
+    if (c != '_' && c != ' ' && c != '-') k.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  for (const auto& x : kPatterns) {
+    std::string kk;
+    for (const char* c = x.key; *c; ++c)
+      if (*c != '-') kk.push_back(*c);
+    if (k == kk) return x.p;
+  }
+  if (k == "zigzag" || k == "alignedrectilinear") return Pattern::Rectilinear;
+  if (k == "lines") return Pattern::Lines;
+  if (k == "trihexagon" || k == "stars") return Pattern::TriHexagon;
+  if (k == "honeycomb3d") return Pattern::Honeycomb3D;
+  return std::nullopt;
+}
+
+std::string_view support_key(Support s) {
+  switch (s) {
+    case Support::None: return "none";
+    case Support::Normal: return "normal";
+    case Support::Tree: return "tree";
+  }
+  return "none";
+}
+
+std::string_view support_name(Support s) {
+  switch (s) {
+    case Support::None: return "Без поддержек";
+    case Support::Normal: return "Обычные";
+    case Support::Tree: return "Древовидные";
+  }
+  return "Без поддержек";
+}
+
+std::optional<Support> support_from_key(std::string_view key) {
+  std::string k;
+  for (char c : key) k.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  if (k == "none" || k == "off" || k == "false" || k.empty()) return Support::None;
+  if (k == "normal" || k == "grid" || k == "normal(auto)" || k == "default") return Support::Normal;
+  if (k == "tree" || k == "tree(auto)" || k == "organic" || k == "trees") return Support::Tree;
   return std::nullopt;
 }
 
