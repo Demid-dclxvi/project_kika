@@ -189,6 +189,18 @@ void Viewer::set_critical(std::optional<app::Vec3> point) {
   update();
 }
 
+void Viewer::set_show_supports(bool on) {
+  if (on == show_supports_) return;
+  show_supports_ = on;
+  roads_dirty_ = true;
+  update();
+}
+
+bool Viewer::supports_visible() const {
+  if (!show_supports_ || !show_roads() || !scene_ || roads_->support_count() == 0 || deform_ != 0.0) return false;
+  return scene_->field() == app::Field::Model || scene_->field() == app::Field::Structure;
+}
+
 void Viewer::set_deform(double scale) {
   if (scale == deform_) return;
   deform_ = scale;
@@ -318,7 +330,7 @@ void Viewer::upload_colors() {
 }
 
 void Viewer::upload_roads() {
-  roads_->build(road_mesh_, overlays_, deform_);
+  roads_->build(road_mesh_, overlays_, deform_, supports_visible());
   const auto& m = road_mesh_;
   road_pos_.bind();
   road_pos_.allocate(m.pos.data(), static_cast<int>(m.pos.size() * sizeof(float)));
@@ -511,7 +523,8 @@ void Viewer::draw_overlay_2d() {
     }
   }
   // легенда
-  const auto lg = scene_->legend();
+  auto lg = scene_->legend();
+  if (lg.kind == app::Legend::Kind::Categories && supports_visible()) lg.entries.push_back({app::palette::kSupport, "Поддержки"});
   if (lg.kind != app::Legend::Kind::None) {
     QFont title = font();
     title.setBold(true);

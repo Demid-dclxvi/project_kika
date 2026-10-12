@@ -46,6 +46,8 @@ class Viewer : public QOpenGLWidget, protected QOpenGLFunctions {
   void set_markers(std::vector<Marker> markers);
   void set_critical(std::optional<app::Vec3> point);
   void set_deform(double scale);
+  // Показывать поддержки (на нитях, на виде модели и структуры).
+  void set_show_supports(bool on);
   double deform() const { return deform_; }
   void view(const std::string& name);  // iso, front, top, right
 
@@ -89,6 +91,8 @@ class Viewer : public QOpenGLWidget, protected QOpenGLFunctions {
   std::vector<Marker> markers_;
   std::optional<app::Vec3> critical_;
   double deform_ = 0.0;
+  bool show_supports_ = true;
+  bool supports_visible() const;
   QString empty_text_;
 
   // камера

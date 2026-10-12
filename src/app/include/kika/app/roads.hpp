@@ -33,7 +33,11 @@ class Roads {
 
   // Сетка по текущему полю, разрезу и случаю сцены, с подсветкой и деформацией × deform.
   // С деформацией нить разбивается по каждой ячейке, чтобы изгиб был виден и на длинных отрезках.
-  void build(RoadMesh& out, const std::vector<Overlay>& overlays, double deform) const;
+  // supports — дорисовать поддержки (только без деформации: они не часть детали).
+  void build(RoadMesh& out, const std::vector<Overlay>& overlays, double deform, bool supports = false) const;
+
+  // Сколько отрезков поддержек есть для показа (G-code разобран с keep_supports).
+  std::size_t support_count() const { return model_->tp.supports.size(); }
 
   // Кусок отрезка внутри одной ячейки сетки: доли длины отрезка и элемент (−1 — ячейка пустая).
   struct Piece {
@@ -48,6 +52,7 @@ class Roads {
 
  private:
   Vec3 displaced(const Vec3& p, std::int32_t elem, double deform) const;
+  void build_supports(RoadMesh& out) const;
 
   const analysis::Model* model_;
   const Scene* scene_;

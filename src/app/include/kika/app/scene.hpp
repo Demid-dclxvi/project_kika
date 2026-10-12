@@ -29,6 +29,7 @@ inline constexpr Rgb kBackground = rgb(0xE9EBE6);
 inline constexpr Rgb kGrid = rgb(0xC3C6BD);
 inline constexpr Rgb kGrid2 = rgb(0xD9DBD3);
 inline constexpr Rgb kPart = rgb(0xD5D8CC);
+inline constexpr Rgb kSupport = rgb(0xC9A57A);  // поддержки: не деталь — тёплый серо-песочный
 inline constexpr Rgb kNeutral = rgb(0xC9C8C1);
 inline constexpr Rgb kSelection = rgb(0xF2A900);
 inline constexpr Rgb kFixture = rgb(0x3B3F45);

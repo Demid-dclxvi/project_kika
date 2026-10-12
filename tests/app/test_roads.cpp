@@ -144,3 +144,59 @@ TEST_CASE("Нити: разрез по Z показывает нижние сл�
   const double drop = zmin_plain - zmin_bent;
   CHECK_THAT(drop, WithinRel(k * res.cases[0].summary.max_disp, 0.15));
 }
+
+TEST_CASE("Нити: поддержки из G-code рисуются отдельно и не входят в расчёт", "[app][roads]") {
+  // балка на столе и под ней «поддержка» — две линии с ;TYPE:Support на втором слое
+  const std::string g = R"(;LAYER_CHANGE
+;Z:0.2
+;HEIGHT:0.2
+M83
+G1 Z0.2 F600
+;TYPE:Outer wall
+G1 X0 Y0 F3000
+G1 X20 Y0 E1
+G1 X20 Y10 E0.5
+G1 X0 Y10 E1
+G1 X0 Y0 E0.5
+;LAYER_CHANGE
+;Z:0.4
+;HEIGHT:0.2
+G1 Z0.4
+;TYPE:Support
+G1 X30 Y0
+G1 X40 Y0 E0.5
+G1 X40 Y5 E0.25
+;TYPE:Outer wall
+G1 X0 Y0
+G1 X20 Y0 E1
+G1 X20 Y10 E0.5
+G1 X0 Y10 E1
+G1 X0 Y0 E0.5
+)";
+  kika::gcode::ParseOptions keep;
+  keep.keep_supports = true;
+  const auto plain = kika::gcode::parse(g);
+  auto tp = kika::gcode::parse(g, keep);
+  CHECK(plain.supports.empty());
+  REQUIRE(tp.supports.size() == 2);
+  CHECK(tp.segments.size() == plain.segments.size());
+  CHECK(tp.supports[0].z == 0.4);
+  kika::analysis::ModelOptions o;
+  o.voxel = 1.0;
+  const auto m = kika::analysis::build_model(std::move(tp), o);
+  Scene s(m);
+  Roads r(m, s);
+  CHECK(r.support_count() == 2);
+  RoadMesh without, with;
+  r.build(without, {}, 0.0, false);
+  r.build(with, {}, 0.0, true);
+  // по 8 вершин на линию поддержки, своим цветом
+  CHECK(with.vertex_count() == without.vertex_count() + 16);
+  const auto c = kika::app::palette::kSupport;
+  CHECK(with.col[4 * without.vertex_count()] == static_cast<std::uint8_t>(std::lround(c[0] * 255)));
+  // с деформацией (нет результатов — деформация нулевая по сути, но флаг есть) поддержки не рисуются
+  RoadMesh def, def_plain;
+  r.build(def, {}, 1.0, true);
+  r.build(def_plain, {}, 1.0, false);
+  CHECK(def.vertex_count() == def_plain.vertex_count());
+}

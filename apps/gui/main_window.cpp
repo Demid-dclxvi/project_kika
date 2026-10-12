@@ -60,6 +60,13 @@ namespace kika::gui {
 
 namespace {
 
+// G-code разбирается с поддержками — их видно на нитях (в расчёт они не идут).
+gcode::ParseOptions keep_supports() {
+  gcode::ParseOptions o;
+  o.keep_supports = true;
+  return o;
+}
+
 using app::Field;
 
 struct DetailLevel {
@@ -614,6 +621,9 @@ QWidget* MainWindow::build_panel() {
   panel_scroll_->setObjectName("panel");
   panel_scroll_->setWidgetResizable(true);
   panel_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  // полоса прокрутки всегда на месте: иначе высота панели с переносами строк считается для
+  // ширины без полосы, а потом полоса появляется, строки переносятся сильнее — и поля сжимаются
+  panel_scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
   panel_scroll_->setFrameShape(QFrame::NoFrame);
   panel_scroll_->setMinimumWidth(340);
   auto* inner = new QWidget;
@@ -670,15 +680,23 @@ QWidget* MainWindow::build_panel() {
     infill_edit_ = make_num(15);
     top_edit_ = make_num(5);
     bottom_edit_ = make_num(3);
-    pattern_combo_ = make_combo({{"grid", "Сетка"}, {"rectilinear", "Прямые через слой"}, {"triangles", "Треугольники"},
-                                 {"line", "Линии"}},
-                                "grid");
+    {
+      // ключи и названия рисунков — строковые литералы слайсера, data() у них с нулём в конце
+      std::vector<std::pair<const char*, const char*>> items;
+      for (const auto pat : slicer::patterns()) items.emplace_back(slicer::pattern_key(pat).data(), slicer::pattern_name(pat).data());
+      pattern_combo_ = make_combo(items, "grid");
+    }
+    support_combo_ = make_combo({{"none", "Без поддержек"}, {"normal", "Обычные"}, {"tree", "Древовидные"}}, "none");
+    support_bed_ = new QCheckBox("только от стола");
+    support_bed_->setToolTip("Поддержки не опираются на деталь: внутри отверстий и под нависаниями над деталью их не будет");
     pg->addWidget(make_field("Слой, мм", layer_edit_), 0, 0);
     pg->addWidget(make_field("Стенок", walls_edit_), 0, 1);
     pg->addWidget(make_field("Заполнение, %", infill_edit_), 0, 2);
     pg->addWidget(make_field("Сплошных сверху", top_edit_), 1, 0);
     pg->addWidget(make_field("Сплошных снизу", bottom_edit_), 1, 1);
     pg->addWidget(make_field("Рисунок", pattern_combo_), 1, 2);
+    pg->addWidget(make_field("Поддержки", support_combo_), 2, 0, 1, 2);
+    pg->addWidget(support_bed_, 2, 2, Qt::AlignBottom | Qt::AlignLeft);
     for (int c = 0; c < 3; ++c) pg->setColumnStretch(c, 1);
     pb->addLayout(pg);
     auto* rot = hbox(6);
@@ -715,6 +733,8 @@ QWidget* MainWindow::build_panel() {
       connect(e, &QLineEdit::textEdited, this, [this](const QString&) { read_print_settings(); });
     connect(printer_combo_, &QComboBox::currentIndexChanged, this, [this](int) { read_print_settings(); });
     connect(pattern_combo_, &QComboBox::currentIndexChanged, this, [this](int) { read_print_settings(); });
+    connect(support_combo_, &QComboBox::currentIndexChanged, this, [this](int) { read_print_settings(); });
+    connect(support_bed_, &QCheckBox::toggled, this, [this](bool) { read_print_settings(); });
     connect(btn_slice_, &QPushButton::clicked, this, [this] { reslice(); });
     connect(detail_slider_, &QSlider::valueChanged, this, [this](int x) {
       detail_ = x;
@@ -993,7 +1013,14 @@ QWidget* MainWindow::build_stage() {
     }
     connect(display_, &QButtonGroup::idClicked, this, [this](int d) {
       viewer_->set_display(d == 0 ? Viewer::Display::Roads : Viewer::Display::Voxels);
+      supports_on_->setEnabled(d == 0);
     });
+    supports_on_ = new QCheckBox("поддержки");
+    supports_on_->setChecked(true);
+    supports_on_->setToolTip("Показать поддержки из G-code (в расчёт они не входят)");
+    supports_on_->hide();
+    connect(supports_on_, &QCheckBox::toggled, this, [this](bool on) { viewer_->set_show_supports(on); });
+    row1->addWidget(supports_on_);
     row1->addWidget(dsegf);
     row2->addWidget(deform_ctl_);
     auto* sh = hbox(7);
@@ -1023,6 +1050,20 @@ QWidget* MainWindow::build_stage() {
 
 // ============================================================================ панель
 
+// Содержимое панели поменялось: пересчитать её высоту в прокрутке. Сама QScrollArea этого не
+// замечает, если меняется только высота подписей с переносом строк, — поля тогда сжимаются.
+void MainWindow::refit_panel() {
+  if (refit_pending_) return;
+  refit_pending_ = true;
+  // после всех отложенных перестроек (удалённые карточки, переносы строк) — дважды: сразу и чуть позже
+  for (const int delay : {0, 120})
+    QTimer::singleShot(delay, this, [this, delay] {
+      if (delay > 0) refit_pending_ = false;
+      QEvent ev(QEvent::LayoutRequest);
+      QCoreApplication::sendEvent(panel_scroll_, &ev);
+    });
+}
+
 void MainWindow::render_all() {
   render_model_info();
   render_material();
@@ -1036,6 +1077,7 @@ void MainWindow::render_all() {
 }
 
 void MainWindow::render_model_info() {
+  refit_panel();
   mesh_ctl_->setVisible(model_ != nullptr);
   render_print_settings();
   {
@@ -1083,6 +1125,7 @@ void MainWindow::render_model_info() {
 // ---------------------------------------------------------------------------- настройки печати модели
 
 void MainWindow::render_print_settings() {
+  refit_panel();
   print_box_->setVisible(source_.has_value());
   if (!source_) return;
   const auto& s = print_ui_.settings;
@@ -1092,6 +1135,11 @@ void MainWindow::render_print_settings() {
     printer_combo_->setCurrentIndex(pi >= 0 ? pi : 0);
     const int qi = pattern_combo_->findData(qs(std::string(slicer::pattern_key(s.pattern))));
     pattern_combo_->setCurrentIndex(qi >= 0 ? qi : 0);
+    const QSignalBlocker b3(support_combo_), b4(support_bed_);
+    const int si = support_combo_->findData(qs(std::string(slicer::support_key(s.support))));
+    support_combo_->setCurrentIndex(si >= 0 ? si : 0);
+    support_bed_->setChecked(s.support_on_bed_only);
+    support_bed_->setEnabled(s.support != slicer::Support::None);
   }
   auto put = [](QLineEdit* e, double v) {
     if (!e->hasFocus()) e->setText(num_text(v));
@@ -1107,10 +1155,11 @@ void MainWindow::render_print_settings() {
                              ? QString("Как в файле модели.")
                              : QString("Повёрнута: X %1°, Y %2°, Z %3°.").arg(fmtq(r[0], 0), fmtq(r[1], 0), fmtq(r[2], 0)));
   const int h = static_cast<int>(source_->time_s / 3600), m = static_cast<int>(std::fmod(source_->time_s, 3600) / 60);
-  slice_info_->setText(QString("Сейчас: слоёв %1 · пластик %2 г · печать около %3")
+  slice_info_->setText(QString("Сейчас: слоёв %1 · пластик %2 г%4 · печать около %3")
                            .arg(source_->layers)
                            .arg(fmtq(source_->filament_g, 0))
-                           .arg(h > 0 ? QString("%1 ч %2 мин").arg(h).arg(m) : QString("%1 мин").arg(std::max(1, m))));
+                           .arg(h > 0 ? QString("%1 ч %2 мин").arg(h).arg(m) : QString("%1 мин").arg(std::max(1, m)))
+                           .arg(source_->support_g > 0 ? QString(" (поддержки %1 г)").arg(fmtq(source_->support_g, 1)) : QString()));
   // замечания к модели и нарезке: незамкнутая сетка, нависания, опора на стол
   clear_layout(print_warns_);
   for (const auto& w : source_->mesh->warnings) print_warns_->addWidget(make_warn(qs(w)));
@@ -1126,6 +1175,9 @@ void MainWindow::read_print_settings() {
     s.filament = fil;
   }
   if (const auto pk = slicer::pattern_from_key(combo_key(pattern_combo_))) s.pattern = *pk;
+  if (const auto sk = slicer::support_from_key(combo_key(support_combo_))) s.support = *sk;
+  s.support_on_bed_only = support_bed_->isChecked();
+  support_bed_->setEnabled(s.support != slicer::Support::None);
   auto read = [](QLineEdit* e, double lo, double hi, auto set) {
     const auto x = parse_num(e->text());
     const bool ok = x && *x >= lo && *x <= hi;
@@ -1219,6 +1271,7 @@ void MainWindow::save_gcode(const QString& path) {
 }
 
 void MainWindow::render_material() {
+  refit_panel();
   {
     const QSignalBlocker block(mat_combo_);
     const int i = mat_combo_->findData(qs(job_.material));
@@ -1289,6 +1342,7 @@ void MainWindow::render_material() {
 }
 
 void MainWindow::render_fixtures() {
+  refit_panel();
   clear_layout(fix_list_);
   fix_reselect_.clear();
   for (const auto& f : job_.fixtures) {
@@ -1371,6 +1425,7 @@ QString MainWindow::faces_meta(const std::vector<std::int64_t>& faces) const {
 }
 
 void MainWindow::render_cases() {
+  refit_panel();
   clear_layout(case_list_);
   case_frames_.clear();
   load_reselect_.clear();
@@ -1656,6 +1711,7 @@ void MainWindow::update_case_frames() {
 }
 
 void MainWindow::render_results() {
+  refit_panel();
   results_box_->setVisible(results_ != nullptr);
   clear_layout(results_list_);
   if (!results_) return;
@@ -2063,19 +2119,20 @@ void MainWindow::start_load(LoadPlan plan) {
             src->gcode = std::make_shared<const std::string>(std::move(r.gcode));
             src->layers = r.layers;
             src->filament_g = r.filament_g;
+            src->support_g = r.support_g;
             src->time_s = r.print_time_s;
             src->warnings = std::move(r.warnings);
           }
-          tp = gcode::parse(*src->gcode);
+          tp = gcode::parse(*src->gcode, keep_supports());
         } else if (gcode3mf) {
           std::ifstream f(fspath, std::ios::binary);
           const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
           const auto g = geometry::gcode_from_3mf(bytes);
           if (!g) throw std::runtime_error("В этом 3MF нет G-code (Metadata/plate_1.gcode). Если это модель — сохраните "
                                            "её с расширением .3mf.");
-          tp = gcode::parse(*g);
+          tp = gcode::parse(*g, keep_supports());
         } else {
-          tp = gcode::load(fspath);
+          tp = gcode::load(fspath, keep_supports());
         }
         analysis::ModelOptions mo;
         mo.max_elems = static_cast<int>(plan.max_elems);
@@ -2085,6 +2142,7 @@ void MainWindow::start_load(LoadPlan plan) {
             if (plan.gcode && source_) {  // та же нарезка — сведения о ней прежние
               src->layers = source_->layers;
               src->filament_g = source_->filament_g;
+              src->support_g = source_->support_g;
               src->time_s = source_->time_s;
               src->warnings = source_->warnings;
             }
@@ -2110,6 +2168,7 @@ void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QS
   model_ = std::move(model);
   scene_ = std::make_unique<app::Scene>(*model_);
   roads_ = std::make_unique<app::Roads>(*model_, *scene_);
+  supports_on_->setVisible(roads_->support_count() > 0);
   results_.reset();
   results_job_ = json::Value();
   dirty_ = false;
@@ -2558,9 +2617,17 @@ void MainWindow::continue_script() {
     open_example();
     if (busy_) return;
   }
-  if (!script_.rotate.empty()) {
+  if (!script_.rotate.empty() || !script_.support.empty()) {
     for (const int axis : script_.rotate) rotate_part(axis);
     script_.rotate.clear();
+    if (!script_.support.empty()) {
+      if (const auto k = slicer::support_from_key(script_.support))
+        print_ui_.settings.support = *k;
+      else
+        toast("Неизвестный вид поддержек: " + qs(script_.support), true);
+      script_.support.clear();
+      render_print_settings();
+    }
     if (source_) {
       reslice();
       if (busy_) return;

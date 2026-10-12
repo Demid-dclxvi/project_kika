@@ -156,6 +156,7 @@ void usage() {
                "  --view ВИД           iso, front, top, right\n"
                "  --display ВИД        roads (нити), voxels (расчётная сетка)\n"
                "  --rotate ОСЬ         повернуть модель на 90° вокруг x, y или z и нарезать заново\n"
+               "  --support ВИД        поддержки: none, normal, tree — и нарезать заново\n"
                "  --tool ИНСТРУМЕНТ    plane, hole, brush\n"
                "  --pick X,Y           щелчок по 3D-виду (доли ширины и высоты), можно несколько\n"
                "  --report ФАЙЛ.html   сохранить отчёт\n"
@@ -262,6 +263,9 @@ int main(int argc, char** argv) {
         return 2;
       }
       script.rotate.push_back(axis);
+      scripted = true;
+    } else if (a == "--support") {
+      script.support = next().toStdString();
       scripted = true;
     } else if (a == "--tool") {
       script.tool = next().toStdString();

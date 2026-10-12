@@ -111,7 +111,7 @@ Vec3 Roads::displaced(const Vec3& p, std::int32_t elem, double deform) const {
   return out;
 }
 
-void Roads::build(RoadMesh& out, const std::vector<Overlay>& overlays, double deform) const {
+void Roads::build(RoadMesh& out, const std::vector<Overlay>& overlays, double deform, bool supports) const {
   out.pos.clear();
   out.nrm.clear();
   out.col.clear();
@@ -228,6 +228,68 @@ void Roads::build(RoadMesh& out, const std::vector<Overlay>& overlays, double de
       run_c = c;
     }
     flush();
+  }
+  if (supports && deform == 0.0) build_supports(out);
+}
+
+void Roads::build_supports(RoadMesh& out) const {
+  const auto& sup = model_->tp.supports;
+  const Vec3& o = model_->origin;
+  const auto& sec = scene_->section();
+  const double line_width = model_->tp.info.line_width.value_or(0.45);
+  const Rgb c = palette::kSupport;
+  const std::uint8_t rgb[3] = {byte_of(c[0]), byte_of(c[1]), byte_of(c[2])};
+  for (const auto& s : sup) {
+    double dx = s.x1 - s.x0, dy = s.y1 - s.y0;
+    const double full_len = std::hypot(dx, dy);
+    Vec3 a{s.x0 - o[0], s.y0 - o[1], s.z - 0.5 * s.h - o[2]};
+    if (sec) {  // разрез: линию поддержки обрезаем по плоскости
+      const int ax = sec->first;
+      if (ax == 2) {
+        if (a[2] > sec->second) continue;
+      } else {
+        const double c0 = a[static_cast<std::size_t>(ax)], c1 = c0 + (ax == 0 ? dx : dy);
+        if (c0 > sec->second && c1 > sec->second) continue;
+        if (c0 > sec->second || c1 > sec->second) {
+          const double t = (sec->second - c0) / (c1 - c0);
+          if (c0 > sec->second) {  // отрезаем начало
+            a[0] += t * dx;
+            a[1] += t * dy;
+            dx *= 1 - t;
+            dy *= 1 - t;
+          } else {
+            dx *= t;
+            dy *= t;
+          }
+        }
+      }
+    }
+    const double len = std::hypot(dx, dy);
+    if (len < 1e-6 || s.h <= 0) continue;
+    const double ux = dx / len, uy = dy / len;
+    const double width = std::clamp(s.volume > 0 ? s.volume / (full_len * s.h) : line_width, 0.3 * s.h, 4.0 * s.h);
+    const double hw = 0.5 * width, hh = 0.5 * s.h;
+    const double off[4][3] = {{0, 0, hh}, {-uy * hw, ux * hw, 0}, {0, 0, -hh}, {uy * hw, -ux * hw, 0}};
+    const double nrm[4][3] = {{0, 0, 1}, {-uy, ux, 0}, {0, 0, -1}, {uy, -ux, 0}};
+    const auto base = static_cast<std::uint32_t>(out.pos.size() / 3);
+    for (int end = 0; end < 2; ++end) {
+      const double t = end == 0 ? -hw : len + hw;
+      for (std::size_t q = 0; q < 4; ++q) {
+        out.pos.push_back(static_cast<float>(a[0] + t * ux + off[q][0]));
+        out.pos.push_back(static_cast<float>(a[1] + t * uy + off[q][1]));
+        out.pos.push_back(static_cast<float>(a[2] + off[q][2]));
+        for (std::size_t i = 0; i < 3; ++i) {
+          out.nrm.push_back(snorm(nrm[q][i]));
+          out.col.push_back(rgb[i]);
+        }
+        out.nrm.push_back(0);
+        out.col.push_back(255);
+      }
+    }
+    for (std::uint32_t q = 0; q < 4; ++q) {
+      const std::uint32_t q1 = (q + 1) % 4, ra = base, rb = base + 4;
+      out.idx.insert(out.idx.end(), {ra + q, ra + q1, rb + q1, ra + q, rb + q1, rb + q});
+    }
   }
 }
 

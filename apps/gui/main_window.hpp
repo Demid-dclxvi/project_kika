@@ -56,6 +56,7 @@ struct StartupScript {
   std::string view;                 // iso, front, top, right
   std::string display;              // roads (нити), voxels (сетка)
   std::vector<int> rotate;          // повороты модели на 90° (оси 0…2) с новой нарезкой
+  std::string support;              // поддержки: none, normal, tree (с новой нарезкой)
   std::string tool;                 // plane, hole, brush
   std::vector<std::pair<double, double>> picks;   // щелчки по 3D-виду, доли ширины и высоты
   QString report;                   // сохранить отчёт
@@ -148,6 +149,7 @@ class MainWindow : public QMainWindow {
   };
   void start_load(LoadPlan plan);
   void render_print_settings();
+  void refit_panel();
   void read_print_settings();
   void update_print_state();
   void on_model_ready(std::shared_ptr<analysis::Model> model, const QString& path, long long max_elems, bool keep_job,
@@ -169,7 +171,7 @@ class MainWindow : public QMainWindow {
     slicer::PrintJob print;  // как нарезано сейчас
     std::shared_ptr<const std::string> gcode;
     int layers = 0;
-    double filament_g = 0, time_s = 0;
+    double filament_g = 0, time_s = 0, support_g = 0;
     std::vector<std::string> warnings;
   };
   std::optional<ModelSource> source_;
@@ -215,6 +217,10 @@ class MainWindow : public QMainWindow {
   QWidget* print_box_ = nullptr;
   QComboBox* printer_combo_ = nullptr;
   QComboBox* pattern_combo_ = nullptr;
+  QComboBox* support_combo_ = nullptr;
+  QCheckBox* support_bed_ = nullptr;
+  QCheckBox* supports_on_ = nullptr;  // показ поддержек на нитях
+  bool refit_pending_ = false;
   QLineEdit* layer_edit_ = nullptr;
   QLineEdit* walls_edit_ = nullptr;
   QLineEdit* infill_edit_ = nullptr;
