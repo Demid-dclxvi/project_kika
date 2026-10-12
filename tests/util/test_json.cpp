@@ -9,6 +9,7 @@
 #include "kika/util/json.hpp"
 
 using kika::json::dump;
+using kika::json::dump_readable;
 using kika::json::parse;
 using kika::json::ParseError;
 using kika::json::Value;
@@ -92,4 +93,21 @@ TEST_CASE("JSON: истинность как в Python и повтор ключ�
   CHECK(Value(0.5).truthy());
   CHECK(parse(R"({"a": 1, "a": 2})").find("a")->as_int() == 2);
   CHECK_THROWS_AS(Value("x").as_double(), std::invalid_argument);
+}
+
+TEST_CASE("JSON: запись для человека — плоские массивы в одну строку", "[json]") {
+  const Value v = parse(R"({"faces": [1, 2, 3], "where": [{"side": "zmin"}], "e": {}, "a": []})");
+  const std::string text = dump_readable(v);
+  CHECK(text ==
+        "{\n"
+        "  \"faces\": [1, 2, 3],\n"
+        "  \"where\": [\n"
+        "    {\n"
+        "      \"side\": \"zmin\"\n"
+        "    }\n"
+        "  ],\n"
+        "  \"e\": {},\n"
+        "  \"a\": []\n"
+        "}");
+  CHECK(dump(parse(text)) == dump(v));
 }

@@ -35,6 +35,9 @@ json::Value print_to_json(const PrintJob& p);
 // Поворот детали: матрица по углам rotate (сначала X, затем Y, затем Z) и обратно.
 geometry::Transform rotation_of(const std::array<double, 3>& rotate);
 std::array<double, 3> euler_xyz(const geometry::Transform& r);
+// Поворот детали из положения from в положение to (оба угла — от модели в файле):
+// R(to)·R(from)ᵀ, без сдвига.
+geometry::Transform turn_between(const std::array<double, 3>& from, const std::array<double, 3>& to);
 
 // Поворот и постановка в центр стола: сетку после этого можно резать.
 geometry::Transform placement(const geometry::TriangleMesh& mesh, const PrintJob& p);

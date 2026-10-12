@@ -400,41 +400,6 @@ QString kv_table(const std::vector<std::pair<QString, QString>>& rows) {
   return h + "</table>";
 }
 
-// JSON задания для файла: с отступами, но короткие массивы чисел (грани, векторы) — в одну строку.
-void pretty_json(std::string& out, const json::Value& v, int level) {
-  const std::string pad(static_cast<std::size_t>(2 * level), ' '), pad1(static_cast<std::size_t>(2 * level + 2), ' ');
-  if (v.is_array()) {
-    const auto& a = v.as_array();
-    const bool flat = std::all_of(a.begin(), a.end(), [](const json::Value& x) { return !x.is_array() && !x.is_object(); });
-    if (a.empty() || flat) {
-      out += json::dump(v);
-      return;
-    }
-    out += "[\n";
-    for (std::size_t i = 0; i < a.size(); ++i) {
-      out += pad1;
-      pretty_json(out, a[i], level + 1);
-      out += i + 1 < a.size() ? ",\n" : "\n";
-    }
-    out += pad + "]";
-  } else if (v.is_object()) {
-    const auto& o = v.as_object();
-    if (o.empty()) {
-      out += "{}";
-      return;
-    }
-    out += "{\n";
-    for (std::size_t i = 0; i < o.size(); ++i) {
-      out += pad1 + json::dump(json::Value(o[i].first)) + ": ";
-      pretty_json(out, o[i].second, level + 1);
-      out += i + 1 < o.size() ? ",\n" : "\n";
-    }
-    out += pad + "}";
-  } else {
-    out += json::dump(v);
-  }
-}
-
 void write_file(const QString& path, const std::string& data) {
   std::ofstream f(to_path(path), std::ios::binary);
   if (f) f.write(data.data(), static_cast<std::streamsize>(data.size()));
@@ -1343,6 +1308,8 @@ void MainWindow::run_advisor() {
   rq.job = job_;
   rq.goals = goals();
   rq.max_elems = 20000;
+  // запас лучших вариантов — на сетке окна (не подробнее 120 тыс.): как после «Применить» и расчёта
+  rq.refine_elems = static_cast<int>(std::min<long long>(model_max_elems_, 120000));
   auto prog = progress_cb();
   start_work(
       [this, mesh, model, rq, prog]() mutable -> std::function<void()> {
@@ -1402,7 +1369,7 @@ void MainWindow::render_advice() {
     v->addLayout(head);
     v->addWidget(make_label(qs(c.settings), "muted"));
     QString m;
-    if (c.sf) m += "запас " + fmtq(*c.sf, 2) + " · ";
+    if (c.sf) m += (c.refined ? "запас " + fmtq(*c.sf, 2) : "запас ≈ " + fmtq(*c.sf, 1)) + " · ";
     const int min = std::max(1, static_cast<int>(std::lround(c.time_s / 60)));
     m += (min >= 60 ? QString("%1 ч %2 мин").arg(min / 60).arg(min % 60) : QString("%1 мин").arg(min)) + " · " +
          fmtq(c.grams, 0) + " г";
@@ -2337,12 +2304,7 @@ void MainWindow::on_model_ready(std::shared_ptr<analysis::Model> model, const QS
   detail_ = nearest_detail(max_elems);
   if (keep_job && turned_from && old_scene && source_) {
     // деталь повёрнута на столе: поверхности и направления нагрузок поворачиваются вместе с ней
-    // поворот из прежнего положения в новое: R_new · R_oldᵀ (обратный к повороту — транспонированный)
-    geometry::Transform back = slicer::rotation_of(*turned_from);
-    std::swap(back.r[1], back.r[3]);
-    std::swap(back.r[2], back.r[6]);
-    std::swap(back.r[5], back.r[7]);
-    const auto turn = slicer::rotation_of(source_->print.rotate) * back;
+    const auto turn = slicer::turn_between(*turned_from, source_->print.rotate);
     auto count = [](const app::UiJob& j) {
       int n = 0;
       for (const auto& f : j.fixtures) n += f.faces.empty() ? 0 : 1;
@@ -2626,9 +2588,7 @@ bool MainWindow::save_job_to(const QString& out) {
     // G-code — относительно папки задания: так задание находит деталь и после переноса папки
     const QString rel = QDir(QFileInfo(out).absolutePath()).relativeFilePath(QFileInfo(gcode_path_).absoluteFilePath());
     const auto j = job_json(rel);
-    std::string text;
-    pretty_json(text, j, 0);
-    write_file(out, text + "\n");
+    write_file(out, json::dump_readable(j) + "\n");
     toast("Задание сохранено: " + QFileInfo(out).fileName() +
           ". Его можно открыть здесь же или посчитать командой kika run.");
     return true;

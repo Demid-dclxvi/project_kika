@@ -47,7 +47,7 @@ struct Bracket {
     job = kika::app::from_job_json(job_json, model);
   }
 
-  kika::advisor::Request request(const kika::advisor::Goals& g, int max_elems) const {
+  kika::advisor::Request request(const kika::advisor::Goals& g, int max_elems, int refine_elems = 0) const {
     kika::advisor::Request rq;
     rq.mesh = &im.mesh;
     rq.current = current;
@@ -56,6 +56,7 @@ struct Bracket {
     rq.job = job;
     rq.goals = g;
     rq.max_elems = max_elems;
+    rq.refine_elems = refine_elems;
     return rq;
   }
 };
@@ -84,10 +85,14 @@ TEST_CASE("Подбор: уголок — прочно и экономно кл�
   // профилем в плоскость слоя уголок выдерживает — подбор должен это найти
   const Bracket b(8000);
   REQUIRE(kika::app::can_run(b.job));
-  const auto res = kika::advisor::advise(b.request({false, true, true}, 8000));
+  const auto res = kika::advisor::advise(b.request({false, true, true}, 8000, 20000));
   REQUIRE(res.strength_evaluated);
   REQUIRE(!res.ranked.empty());
   const auto& best = res.ranked.front();
+  // запас лучших уточнён на более подробной сетке, и «как сейчас» — тоже, для честного сравнения
+  CHECK(best.refined);
+  CHECK(res.current.refined);
+  REQUIRE(res.current.sf);
   CHECK(best.feasible);
   CHECK(best.printable);
   REQUIRE(best.sf);
@@ -96,6 +101,8 @@ TEST_CASE("Подбор: уголок — прочно и экономно кл�
   CHECK(std::abs(best.print.rotate[0]) == 90);
   CHECK(best.print.rotate[1] == 0);
   CHECK(res.summary.find("Лучше всего") != std::string::npos);
+  CHECK(res.summary.find("уточнён") != std::string::npos);
+  CHECK(*best.sf > *res.current.sf);
   // в положениях есть и исходное (с меньшим запасом)
   bool upright = false;
   for (const auto& c : res.orientations)

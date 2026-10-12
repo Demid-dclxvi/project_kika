@@ -29,14 +29,6 @@ std::string minutes(double s) {
   return m >= 60 ? std::format("{} ч {} мин", m / 60, m % 60) : std::format("{} мин", std::max(1, m));
 }
 
-Transform transposed(Transform t) {
-  std::swap(t.r[1], t.r[3]);
-  std::swap(t.r[2], t.r[6]);
-  std::swap(t.r[5], t.r[7]);
-  t.t = {0, 0, 0};
-  return t;
-}
-
 bool has(const std::vector<std::string>& ws, std::string_view part) {
   for (const auto& w : ws)
     if (w.find(part) != std::string::npos) return true;
@@ -92,7 +84,7 @@ struct Evaluator {
     if (progress) progress(std::min(0.99, static_cast<double>(done) / static_cast<double>(std::max<std::size_t>(total, 1))), text);
   }
 
-  Candidate run(PrintJob pj, bool analyse) {
+  Candidate run(PrintJob pj, bool analyse, int elems = 0) {
     Candidate c;
     auto& s = pj.settings;
     const auto mesh = slicer::placed(*rq.mesh, pj);
@@ -113,14 +105,14 @@ struct Evaluator {
                   !has(r.warnings, "без поддержки") && !has(r.warnings, "не помещается");
     if (analyse && loads) {
       analysis::ModelOptions mo;
-      mo.max_elems = rq.max_elems;
+      mo.max_elems = elems > 0 ? elems : rq.max_elems;
       const auto model = analysis::build_model(gcode::parse(r.gcode), mo);
       const app::Scene scene(model);
       app::UiJob job = rq.job;
-      const Transform turn = slicer::rotation_of(pj.rotate) * transposed(slicer::rotation_of(rq.current.rotate));
+      const Transform turn = slicer::turn_between(rq.current.rotate, pj.rotate);
       app::rotate_job(job, *rq.scene, scene, turn.r);
       if (app::can_run(job)) {
-        const auto res = analysis::run_analysis(model, analysis::parse_job(app::to_job_json(job, "", "", rq.max_elems)),
+        const auto res = analysis::run_analysis(model, analysis::parse_job(app::to_job_json(job, "", "", mo.max_elems)),
                                                 [this](std::string_view, double, std::string_view) { tick("Расчёт"); });
         double mn = std::numeric_limits<double>::infinity();
         for (const auto& cs : res.cases) mn = std::min(mn, cs.summary.sf);
@@ -222,7 +214,7 @@ Result advise(const Request& rq, const Progress& progress) {
   PrintJob base = rq.current;
   auto& bs = base.settings;
   const double nozzle = bs.printer.nozzle;
-  const double fast_layer = std::min(0.28, 0.7 * nozzle);
+  const double fast_layer = std::round(std::min(0.28, 0.7 * nozzle) * 100) / 100;  // до сотых мм
   bs.layer_height = g.speed ? fast_layer : 0.2;
   bs.first_layer_height = 0.2;
   bs.wall_loops = 3;
@@ -242,7 +234,9 @@ Result advise(const Request& rq, const Progress& progress) {
       g.strength ? (g.speed ? std::vector{slicer::Pattern::Triangles, slicer::Pattern::Cubic}
                             : std::vector{slicer::Pattern::Triangles, slicer::Pattern::Gyroid, slicer::Pattern::Cubic})
                  : std::vector<slicer::Pattern>{};
-  ev.total = 1 + orients.size() + variants.size() + extra_patterns.size();
+  const bool refine = ev.loads && rq.refine_elems > rq.max_elems;
+  constexpr std::size_t kRefineOk = 3, kRefineMax = 4;  // уточнить, пока не найдутся три подходящих
+  ev.total = 1 + orients.size() + variants.size() + extra_patterns.size() + (refine ? kRefineMax + 1 : 0);
 
   // 0. как сейчас — для сравнения
   ev.tick("Как сейчас");
@@ -284,7 +278,8 @@ Result advise(const Request& rq, const Progress& progress) {
         Candidate full = ev.run(c.print, true);
         --ev.done;  // уже учтён при нарезке
         c = full;
-        if (c.feasible) ++after_ok;
+        // с запасом на ошибку грубой сетки: уточнение может немного снизить запас
+        if (c.feasible && *c.sf >= 1.1 * ev.target) ++after_ok;
       } else if (ev.loads) {
         c.sf.reset();
         c.feasible = false;  // не считали — не рекомендуем
@@ -321,8 +316,33 @@ Result advise(const Request& rq, const Progress& progress) {
       dup = dup || (u.orientation == c.orientation && u.settings == c.settings);
     if (!dup) uniq.push_back(std::move(c));
   }
+  // 3. уточнение: запас лучших — на подробной сетке; подходящие уточнённые — первыми
+  if (refine) {
+    std::size_t checked = 0, ok = 0;
+    for (auto& c : uniq) {
+      if (checked >= kRefineMax || ok >= kRefineOk) break;
+      if (!c.printable || !c.sf) continue;
+      ev.tick("Уточнение запаса");
+      const Candidate f = ev.run(c.print, true, rq.refine_elems);
+      c.sf = f.sf;
+      c.feasible = f.feasible;
+      c.refined = true;
+      ++checked;
+      ok += c.feasible ? 1 : 0;
+    }
+    if (now.sf) {
+      ev.tick("Уточнение запаса");
+      const Candidate f = ev.run(rq.current, true, rq.refine_elems);
+      now.sf = f.sf;
+      now.feasible = f.feasible;
+      now.refined = true;
+    }
+    score(uniq, g, ev.target);
+    std::stable_partition(uniq.begin(), uniq.end(), [](const Candidate& c) { return c.refined && c.feasible && c.printable; });
+  }
   res.ranked = std::move(uniq);
   if (res.ranked.size() > 6) res.ranked.resize(6);
+  res.current = now;
 
   // объяснение
   const Candidate& best = res.ranked.front();
@@ -330,18 +350,21 @@ Result advise(const Request& rq, const Progress& progress) {
   auto metrics = [&](const Candidate& c) {
     std::string m = std::format("печать ≈ {}, пластик {} г", minutes(c.time_s), num(c.grams, 0));
     if (c.support_g > 0) m += std::format(" (из них поддержки {} г)", num(c.support_g, 1));
-    if (c.sf) m = std::format("запас ≈ {} (нужно {}), ", num(*c.sf, 2), num(ev.target, 1)) + m;
+    if (c.sf) m = std::format("запас {}{} (нужно {}), ", c.refined ? "" : "≈ ", num(*c.sf, 2), num(ev.target, 1)) + m;
     return m;
   };
   s += " Ожидается: " + metrics(best) + ".";
   s += " Сейчас: " + metrics(now) + ".";
   if (!ev.loads)
-    s += g.strength ? " Прочность не оценивалась: задайте закрепления и нагрузки (шаги 3–4) и подберите заново."
+    s += g.strength ? " Прочность не оценивалась: задайте закрепления и нагрузки и подберите заново."
                     : " Прочность не проверялась: закрепления и нагрузки не заданы.";
   else if (!best.feasible)
     s += " Ни один вариант не дал нужного запаса — нужны другая форма детали, другой пластик или меньше нагрузка.";
+  else if (best.refined)
+    s += std::format(" Варианты сравнивались на грубой сетке, запас лучших уточнён на сетке до {} тыс. элементов.",
+                     rq.refine_elems / 1000);
   else
-    s += " Запас посчитан на грубой сетке, чтобы сравнить варианты; после «Применить» посчитайте деталь заново.";
+    s += " Запас посчитан на грубой сетке, чтобы сравнить варианты; выбранный вариант посчитайте заново на полной сетке.";
   res.summary = s;
   if (progress) progress(1.0, "Готово");
   return res;

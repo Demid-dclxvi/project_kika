@@ -107,6 +107,9 @@ inline constexpr int kCompact = -2;
 // indent ≥ 0 — с отступами.
 // Нечисловые значения (NaN, бесконечность) записываются как null, не-ASCII — как есть (UTF-8).
 std::string dump(const Value& v, int indent = -1);
+// С отступами, но массивы без вложенных массивов и объектов (грани, векторы) — в одну строку:
+// для файлов, которые читает человек (задания).
+std::string dump_readable(const Value& v);
 
 // Название типа по-русски — для сообщений об ошибках в заданиях.
 const char* type_name(Value::Type t);

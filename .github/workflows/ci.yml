@@ -127,6 +127,26 @@ jobs:
           python -m pip install --quiet numpy scipy
           python tools/compare_with_prototype.py --kika build/${{ matrix.preset }}/bin/kika
 
+      - name: Подбор печати из командной строки
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: |
+          bin=build/${{ matrix.preset }}/bin
+          # экономно и прочно: задание с лучшим вариантом считается с тем же запасом, что обещан
+          $bin/kika advise examples/bracket_L.job.json --goals economy,strength --refine-elems 60000 \
+            --json подбор.json --save-job подбор.job.json
+          $bin/kika run подбор.job.json --no-report --quiet --json подбор_итоги.json
+          python3 - <<'PY'
+          import json
+          best = json.load(open('подбор.json', encoding='utf-8'))['candidates'][0]
+          cases = json.load(open('подбор_итоги.json', encoding='utf-8'))
+          sf = min(c['sf'] for c in cases)
+          print('обещан запас', best['sf'], '— посчитан', sf)
+          assert best['sf_refined'] and best['feasible'], best
+          assert abs(sf - best['sf']) < 1e-4 * best['sf'], (sf, best['sf'])
+          assert all(c['verdict'] == 'ok' for c in cases), cases
+          PY
+
       - name: Окно на Linux (виртуальный экран)
         if: runner.os == 'Linux'
         timeout-minutes: 10

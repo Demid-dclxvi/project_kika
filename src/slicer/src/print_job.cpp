@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "kika/analysis/job.hpp"
 
@@ -119,6 +120,15 @@ Value print_to_json(const PrintJob& p) {
 geometry::Transform rotation_of(const std::array<double, 3>& rotate) {
   using geometry::Transform;
   return Transform::rotation(2, rotate[2]) * Transform::rotation(1, rotate[1]) * Transform::rotation(0, rotate[0]);
+}
+
+geometry::Transform turn_between(const std::array<double, 3>& from, const std::array<double, 3>& to) {
+  // обратный к повороту — транспонированный
+  geometry::Transform back = rotation_of(from);
+  std::swap(back.r[1], back.r[3]);
+  std::swap(back.r[2], back.r[6]);
+  std::swap(back.r[5], back.r[7]);
+  return rotation_of(to) * back;
 }
 
 std::array<double, 3> euler_xyz(const geometry::Transform& t) {

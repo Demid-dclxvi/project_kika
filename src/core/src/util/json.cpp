@@ -531,4 +531,45 @@ std::string dump(const Value& v, int indent) {
   return out;
 }
 
+namespace {
+
+void dump_readable_value(std::string& out, const Value& v, int level) {
+  const std::string pad(static_cast<std::size_t>(2 * level), ' '), pad1(static_cast<std::size_t>(2 * level + 2), ' ');
+  if (v.is_array()) {
+    const auto& a = v.as_array();
+    bool flat = true;
+    for (const auto& x : a) flat = flat && !x.is_array() && !x.is_object();
+    if (flat) {
+      out += dump(v);
+      return;
+    }
+    out += "[\n";
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      out += pad1;
+      dump_readable_value(out, a[i], level + 1);
+      out += i + 1 < a.size() ? ",\n" : "\n";
+    }
+    out += pad + "]";
+  } else if (v.is_object() && !v.as_object().empty()) {
+    const auto& o = v.as_object();
+    out += "{\n";
+    for (std::size_t i = 0; i < o.size(); ++i) {
+      out += pad1 + dump(Value(o[i].first)) + ": ";
+      dump_readable_value(out, o[i].second, level + 1);
+      out += i + 1 < o.size() ? ",\n" : "\n";
+    }
+    out += pad + "}";
+  } else {
+    out += dump(v);
+  }
+}
+
+}  // namespace
+
+std::string dump_readable(const Value& v) {
+  std::string out;
+  dump_readable_value(out, v, 0);
+  return out;
+}
+
 }  // namespace kika::json

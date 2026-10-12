@@ -649,7 +649,14 @@ void print_usage() {
             << "  kika advise задание.json --goals speed,strength\n"
             << "                                            подобрать положение детали и настройки печати:\n"
             << "                                            две цели из трёх — speed (скорость), economy\n"
-            << "                                            (экономия), strength (прочность); --json итоги.json\n"
+            << "                                            (экономия), strength (прочность)\n"
+            << "      --json итоги.json                     варианты в JSON\n"
+            << "      --save-job новое.json [--variant 2]   задание с лучшим (или выбранным) вариантом:\n"
+            << "                                            закрепления и нагрузки — на детали в новом\n"
+            << "                                            положении; посчитать — kika run новое.json\n"
+            << "      --max-elems 20000                     сетка для сравнения вариантов\n"
+            << "      --refine-elems 60000                  сетка, на которой уточняется запас лучших\n"
+            << "                                            (по умолчанию — из задания, до 120000)\n"
             << "  kika run [деталь.gcode] задание.json      расчёт прочности (вместо G-code — модель:\n"
             << "                                            поля \"model\" и \"print\" в задании)\n"
             << "      -o отчёт.html                         куда записать отчёт с 3D-видом\n"
@@ -725,7 +732,8 @@ std::optional<int> run_dropped_files(const std::vector<std::string>& args) {
 }
 
 // Подбор положения и настроек печати по двум целям из трёх.
-int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long long max_elems, const std::optional<std::string>& json_out) {
+int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long long max_elems, std::optional<long long> refine_arg,
+               const std::optional<std::string>& json_out, const std::optional<std::string>& save_job, int variant) {
   const auto goals = kika::advisor::goals_from_key(goals_arg);
   if (!goals)
     throw UsageError("--goals: нужны две цели из трёх через запятую — speed, economy, strength (например speed,strength)");
@@ -745,9 +753,12 @@ int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long lo
   const std::string material = job.material ? job.material->key : std::string("PLA");
   const auto current = kika::slicer::print_from_json(job.print ? &*job.print : nullptr, material);
   std::cout << "Модель: " << utf8_from_path(mpath) << "\nЦель: " << kika::advisor::goals_name(*goals) << std::endl;
-  // текущая нарезка — чтобы перевести области задания в грани
+  // запас лучших уточняется на сетке задания (как посчитает kika run), не подробнее 120 тыс.
+  const long long refine_elems =
+      refine_arg ? *refine_arg : std::min<long long>(job.max_elems.value_or(150000), 120000);
+  // текущая нарезка — чтобы перевести области задания в грани (на сетке уточнения: грани точнее)
   kika::analysis::ModelOptions mo;
-  mo.max_elems = static_cast<int>(max_elems);
+  mo.max_elems = static_cast<int>(std::max(max_elems, refine_elems));
   const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, current), current.settings);
   const auto model = kika::analysis::build_model(kika::gcode::parse(r.gcode), mo);
   const kika::app::Scene scene(model);
@@ -759,6 +770,7 @@ int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long lo
   rq.job = kika::app::from_job_json(job_json, model);
   rq.goals = *goals;
   rq.max_elems = static_cast<int>(max_elems);
+  rq.refine_elems = static_cast<int>(refine_elems);
   auto last = std::make_shared<std::string>();
   const auto res = kika::advisor::advise(rq, [last](double f, std::string_view t) {
     if (t != *last) {
@@ -770,7 +782,7 @@ int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long lo
   for (std::size_t k = 0; k < res.ranked.size(); ++k) {
     const auto& c = res.ranked[k];
     std::cout << std::format("{}. {}; {}\n   ", k + 1, c.orientation, c.settings);
-    if (c.sf) std::cout << std::format("запас {} · ", num(*c.sf, 2));
+    if (c.sf) std::cout << (c.refined ? std::format("запас {} · ", num(*c.sf, 2)) : std::format("запас ≈ {} (грубо) · ", num(*c.sf, 1)));
     std::cout << std::format("печать {} мин · {} г{}{}\n", num(c.time_s / 60, 0), num(c.grams, 0),
                              c.support_g > 0 ? std::format(" (поддержки {} г)", num(c.support_g, 1)) : std::string(),
                              !c.printable ? " · плохо печатается" : (!c.feasible ? " · мало запаса" : ""));
@@ -789,6 +801,7 @@ int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long lo
       v["grams"] = c.grams;
       v["support_g"] = c.support_g;
       v["sf"] = c.sf ? kika::json::Value(*c.sf) : kika::json::Value();
+      v["sf_refined"] = c.refined;
       v["printable"] = c.printable;
       v["feasible"] = c.feasible;
       arr.push_back(v);
@@ -796,6 +809,39 @@ int cmd_advise(const std::string& job_arg, const std::string& goals_arg, long lo
     out["candidates"] = arr;
     write_file(path_from_utf8(*json_out), kika::json::dump(out, 2));
     std::cout << "\nИтоги: " << *json_out << "\n";
+  }
+  if (save_job) {
+    if (variant < 1 || static_cast<std::size_t>(variant) > res.ranked.size())
+      throw UsageError(std::format("--variant: есть варианты 1–{}", res.ranked.size()));
+    const auto& pick = res.ranked[static_cast<std::size_t>(variant - 1)];
+    // задание на сетке уточнения (kika run посчитает то же, что «Ожидается»): закрепления и
+    // нагрузки переносятся с детали в прежнем положении на деталь в новом (грани — номерами,
+    // как у задания из окна)
+    kika::analysis::ModelOptions full;
+    full.max_elems = static_cast<int>(refine_elems);
+    std::cout << "\nПереношу закрепления и нагрузки на вариант " << variant << "…" << std::endl;
+    const kika::app::Scene& from_scene = scene;
+    auto ui = rq.job;
+    const auto nr = kika::slicer::slice(kika::slicer::placed(im.mesh, pick.print), pick.print.settings);
+    const auto to_model = kika::analysis::build_model(kika::gcode::parse(nr.gcode), full);
+    const kika::app::Scene to_scene(to_model);
+    kika::app::rotate_job(ui, from_scene, to_scene, kika::slicer::turn_between(current.rotate, pick.print.rotate).r);
+    const fs::path out_path = path_from_utf8(*save_job);
+    std::string title = utf8_from_path(job_path.stem());
+    if (const auto* t = job_json.find("title"); t && t->is_string()) title = t->as_string();
+    kika::json::Value j = kika::app::to_job_json(ui, title, "", full.max_elems);
+    // модель — относительно папки нового задания (если она недалеко), иначе полный путь
+    const fs::path out_dir = fs::absolute(out_path, ec).parent_path();
+    fs::path rel = fs::relative(fs::absolute(mpath, ec), out_dir, ec);
+    int up = 0;
+    for (const auto& part : rel) up += part == ".." ? 1 : 0;
+    if (ec || rel.empty() || up > 2) rel = fs::absolute(mpath, ec);
+    const std::u8string rel_u8 = rel.generic_u8string();  // с «/» — задание переносимо между системами
+    j["model"] = std::string(rel_u8.begin(), rel_u8.end());
+    j["print"] = kika::slicer::print_to_json(pick.print);
+    j["subtitle"] = std::format("Подбор ({}), вариант {}: {}; {}.", kika::advisor::goals_name(*goals), variant, pick.orientation, pick.settings);
+    write_file(out_path, kika::json::dump_readable(j) + "\n");
+    std::cout << "Задание с вариантом " << variant << ": " << *save_job << " — посчитайте его: kika run " << *save_job << "\n";
   }
   return 0;
 }
@@ -834,12 +880,15 @@ int run_main(const std::vector<std::string>& args) {
       return finish(cmd_slice(a.positional[0], a));
     }
     if (cmd == "advise") {
-      const auto a = parse_args(args, 2, {{{"--goals"}, true}, {{"--max-elems"}, true}, {{"--json"}, true}});
+      const auto a = parse_args(args, 2, {{{"--goals"}, true}, {{"--max-elems"}, true}, {{"--refine-elems"}, true}, {{"--json"}, true}, {{"--save-job"}, true}, {{"--variant"}, true}});
       if (a.positional.size() != 1) throw UsageError("укажите задание по модели: kika advise задание.json --goals speed,strength");
       const auto goals = a.value("--goals");
       if (!goals) throw UsageError("укажите две цели: --goals speed,economy | speed,strength | economy,strength");
       const long long me = a.value("--max-elems") ? static_cast<long long>(parse_number(*a.value("--max-elems"), "--max-elems")) : 20000;
-      return finish(cmd_advise(a.positional[0], *goals, me, a.value("--json")));
+      const int variant = a.value("--variant") ? static_cast<int>(parse_number(*a.value("--variant"), "--variant")) : 1;
+      std::optional<long long> re;
+      if (a.value("--refine-elems")) re = static_cast<long long>(parse_number(*a.value("--refine-elems"), "--refine-elems"));
+      return finish(cmd_advise(a.positional[0], *goals, me, re, a.value("--json"), a.value("--save-job"), variant));
     }
     if (cmd == "materials") {
       parse_args(args, 2, {});
