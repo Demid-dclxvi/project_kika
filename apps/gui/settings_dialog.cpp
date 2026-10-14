@@ -17,13 +17,13 @@
 
 #include "kika/analysis/job.hpp"
 #include "kika/app/profile_store.hpp"
+#include "field_editors.hpp"
 #include "widgets.hpp"
 
 namespace kika::gui {
 
 namespace {
 
-using slicer::FieldKind;
 using slicer::Section;
 
 constexpr const char* kBuiltin = "b:";
@@ -32,17 +32,23 @@ constexpr const char* kCurrent = "current";
 
 }  // namespace
 
-SettingsDialog::SettingsDialog(const slicer::Settings& s, Section first, QWidget* parent) : QDialog(parent), s_(s) {
-  setWindowTitle("Настройки печати");
-  resize(700, 760);
+SettingsDialog::SettingsDialog(const slicer::Settings& s, Section first, QWidget* parent, bool only)
+    : QDialog(parent), s_(s) {
+  setWindowTitle(only ? (first == Section::Printer ? "Принтер" : first == Section::Filament ? "Пластик" : "Печать")
+                      : "Настройки печати");
+  resize(720, 780);
   auto* v = new QVBoxLayout(this);
   v->setContentsMargins(16, 14, 16, 14);
   v->setSpacing(10);
-  tabs_ = new QTabWidget;
-  for (const Section sec : {Section::Process, Section::Filament, Section::Printer})
-    tabs_->addTab(build_tab(sec), qs(std::string(slicer::section_name(sec))));
-  tabs_->setCurrentIndex(first == Section::Process ? 0 : first == Section::Filament ? 1 : 2);
-  v->addWidget(tabs_, 1);
+  if (only) {
+    v->addWidget(build_tab(first), 1);
+  } else {
+    tabs_ = new QTabWidget;
+    for (const Section sec : {Section::Process, Section::Filament, Section::Printer})
+      tabs_->addTab(build_tab(sec), qs(std::string(slicer::section_name(sec))));
+    tabs_->setCurrentIndex(first == Section::Process ? 0 : first == Section::Filament ? 1 : 2);
+    v->addWidget(tabs_, 1);
+  }
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   ok_ = buttons->button(QDialogButtonBox::Ok);
   ok_->setText("Применить");
@@ -75,8 +81,8 @@ QWidget* SettingsDialog::build_tab(Section section) {
                               ? "Как печатать: слои, стенки, заполнение, скорости. Скорости ограничены пределами принтера "
                                 "и расходом сопла для пластика."
                           : section == Section::Filament
-                              ? "Пластик: температуры, обдув, расход. Тип пластика — из шага «Материал»; здесь — как его "
-                                "печатать."
+                              ? "Пластик: температуры, обдув, расход. Тип пластика — тот же, что материал для расчёта "
+                                "прочности."
                               : "Принтер: стол, пределы движения, откат, стартовый и финальный G-code."));
   fill_profiles(section);
   connect(combo, &QComboBox::activated, this, [this, section](int) { choose_profile(section); });
@@ -91,91 +97,44 @@ QWidget* SettingsDialog::build_tab(Section section) {
     fill_profiles(section);
   });
 
-  auto* scroll = new QScrollArea;
-  scroll->setWidgetResizable(true);
-  scroll->setFrameShape(QFrame::NoFrame);
-  auto* body = new QWidget;
-  auto* bv = new QVBoxLayout(body);
-  bv->setContentsMargins(0, 4, 8, 4);
-  bv->setSpacing(6);
-  // одна сетка на вкладку: поля всех разделов — в одном столбце
-  auto* grid = new QGridLayout;
-  grid->setHorizontalSpacing(10);
-  grid->setVerticalSpacing(6);
-  grid->setColumnStretch(3, 1);
-  bv->addLayout(grid);
-  std::string group;
-  int r = 0;
-  for (const auto& f : slicer::fields()) {
-    if (f.section != section) continue;
-    if (f.group != group) {
-      if (!group.empty()) grid->setRowMinimumHeight(r++, 10);
-      group = f.group;
-      grid->addWidget(make_label(qs(group), "itemTitle", false), r++, 0, 1, 4);
+  // страницы раздела — вкладки, как в OrcaSlicer
+  auto* pages = new QTabWidget;
+  for (const auto& name : slicer::pages(section)) {
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto* body = new QWidget;
+    auto* bv = new QVBoxLayout(body);
+    bv->setContentsMargins(4, 8, 8, 4);
+    bv->setSpacing(6);
+    auto* grid = new QGridLayout;
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(6);
+    grid->setColumnStretch(0, 1);
+    bv->addLayout(grid);
+    std::string group;
+    int r = 0;
+    for (const auto& f : slicer::fields()) {
+      if (f.section != section || f.page != name) continue;
+      if (f.group != group) {
+        if (!group.empty()) grid->setRowMinimumHeight(r++, 10);
+        group = f.group;
+        grid->addWidget(make_label(qs(group), "itemTitle", false), r++, 0, 1, 3);
+      }
+      Editor ed{&f, nullptr};
+      auto* w = make_field_editor(f, this, [this, &f, section] {
+        for (const auto& e : editors_[section])
+          if (e.field == &f) read(e);
+      });
+      ed.widget = w;
+      r = add_field_row(grid, r, f, w);
+      editors_[section].push_back(ed);
     }
-    QWidget* w = nullptr;
-    const QString tip = qs(f.tip);
-    switch (f.kind) {
-      case FieldKind::Number:
-      case FieldKind::Integer: {
-        auto* e = make_num(std::nullopt);
-        e->setFixedWidth(110);
-        connect(e, &QLineEdit::textEdited, this, [this, &f, e](const QString&) { read({&f, e}); });
-        w = e;
-        break;
-      }
-      case FieldKind::Bool: {
-        auto* c = new QCheckBox(qs(f.label));
-        connect(c, &QCheckBox::toggled, this, [this, &f, c](bool) { read({&f, c}); });
-        w = c;
-        break;
-      }
-      case FieldKind::Choice: {
-        auto* c = new Combo;
-        for (const auto& ch : f.choices) c->addItem(qs(ch.name), qs(ch.key));
-        connect(c, &QComboBox::currentIndexChanged, this, [this, &f, c](int) { read({&f, c}); });
-        w = c;
-        break;
-      }
-      case FieldKind::Text: {
-        auto* e = new QLineEdit;
-        connect(e, &QLineEdit::textEdited, this, [this, &f, e](const QString&) { read({&f, e}); });
-        w = e;
-        break;
-      }
-      case FieldKind::Code: {
-        auto* e = new QPlainTextEdit;
-        e->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-        e->setMinimumHeight(150);
-        e->setLineWrapMode(QPlainTextEdit::NoWrap);
-        connect(e, &QPlainTextEdit::textChanged, this, [this, &f, e] { read({&f, e}); });
-        w = e;
-        break;
-      }
-    }
-    w->setToolTip(tip);
-    if (f.kind == FieldKind::Bool) {
-      grid->addWidget(w, r, 0, 1, 4);
-    } else if (f.kind == FieldKind::Code) {
-      auto* l = make_label(qs(f.label), "fieldLabel", false);
-      l->setToolTip(tip);
-      grid->addWidget(l, r++, 0, 1, 4);
-      grid->addWidget(w, r, 0, 1, 4);
-      if (!f.tip.empty()) grid->addWidget(make_hint(tip), ++r, 0, 1, 4);
-    } else {
-      auto* l = make_label(qs(f.label), nullptr, false);
-      l->setToolTip(tip);
-      grid->addWidget(l, r, 0);
-      grid->addWidget(w, r, 1);
-      if (!f.unit.empty()) grid->addWidget(make_label(qs(f.unit), "hint", false), r, 2);
-      if (f.kind == FieldKind::Text || f.kind == FieldKind::Choice) w->setMinimumWidth(220);
-    }
-    ++r;
-    editors_[section].push_back({&f, w});
+    bv->addStretch();
+    scroll->setWidget(body);
+    pages->addTab(scroll, qs(name));
   }
-  bv->addStretch();
-  scroll->setWidget(body);
-  pv->addWidget(scroll, 1);
+  pv->addWidget(pages, 1);
   refresh(section);
   return page;
 }
@@ -258,46 +217,17 @@ void SettingsDialog::save_as(Section section) {
 
 void SettingsDialog::refresh(Section section) {
   for (const auto& e : editors_[section]) {
-    const QSignalBlocker block(e.widget);
-    const auto v = e.field->get(s_);
-    switch (e.field->kind) {
-      case FieldKind::Number:
-      case FieldKind::Integer: static_cast<QLineEdit*>(e.widget)->setText(num_text(v.as_double())); break;
-      case FieldKind::Bool: static_cast<QCheckBox*>(e.widget)->setChecked(v.as_bool()); break;
-      case FieldKind::Choice: {
-        auto* c = static_cast<QComboBox*>(e.widget);
-        const int i = c->findData(qs(v.as_string()));
-        c->setCurrentIndex(i >= 0 ? i : 0);
-        break;
-      }
-      case FieldKind::Text: static_cast<QLineEdit*>(e.widget)->setText(qs(v.as_string())); break;
-      case FieldKind::Code: static_cast<QPlainTextEdit*>(e.widget)->setPlainText(qs(v.as_string())); break;
-    }
-    set_bad(e.widget, false);
+    show_field(*e.field, e.widget, s_);
     std::erase(bad_, e.widget);
   }
   update_ok();
 }
 
 void SettingsDialog::read(const Editor& e) {
-  json::Value v;
-  switch (e.field->kind) {
-    case FieldKind::Number:
-    case FieldKind::Integer: {
-      const auto x = parse_num(static_cast<QLineEdit*>(e.widget)->text());
-      v = x ? json::Value(*x) : json::Value(std::string());
-      break;
-    }
-    case FieldKind::Bool: v = static_cast<QCheckBox*>(e.widget)->isChecked(); break;
-    case FieldKind::Choice: v = ss(static_cast<QComboBox*>(e.widget)->currentData().toString()); break;
-    case FieldKind::Text: v = ss(static_cast<QLineEdit*>(e.widget)->text()); break;
-    case FieldKind::Code: v = ss(static_cast<QPlainTextEdit*>(e.widget)->toPlainText()); break;
-  }
-  const bool ok = slicer::check_field(*e.field, v, "").empty();
-  set_bad(e.widget, !ok);
+  const auto v = read_field(*e.field, e.widget);
   std::erase(bad_, e.widget);
-  if (ok)
-    e.field->set(s_, v);
+  if (v)
+    e.field->set(s_, *v);
   else
     bad_.push_back(e.widget);
   // правка — уже не тот профиль, что выбран

@@ -3,6 +3,7 @@
 #include "kika/app/preview.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <format>
@@ -36,7 +37,7 @@ constexpr TypeInfo kTypes[] = {
     {LineType::Support, "support", "Поддержки", 0x49B04D},
     {LineType::SupportInterface, "support_interface", "Плотные слои поддержек", 0x2B7A30},
     {LineType::PrimeTower, "prime_tower", "Черновая башня", 0xB3A47A},
-    {LineType::Custom, "custom", "Прочее (старт, прочистка)", 0x8E8E8E},
+    {LineType::Custom, "custom", "Прочее", 0x8E8E8E},
     {LineType::Travel, "travel", "Перемещения", 0x4C6FA8},
 };
 
@@ -286,12 +287,15 @@ Preview parse_preview(std::string_view g) {
       // ширина по объёму: сечение — прямоугольник со скруглёнными боками (как у Slic3r/Orca)
       const double w = de * fil_area / (len * h) + h * (1 - std::numbers::pi / 4);
       m.width = static_cast<float>(std::clamp(w, 0.05, 10.0));
-      const std::array<double, 3> lo{std::min(x, nx), std::min(y, ny), nz - h}, hi{std::max(x, nx), std::max(y, ny), nz};
-      for (std::size_t a = 0; a < 3; ++a) {
-        p.min[a] = have_box ? std::min(p.min[a], lo[a]) : lo[a];
-        p.max[a] = have_box ? std::max(p.max[a], hi[a]) : hi[a];
+      // габарит — без прочистки и прочего из стартового кода
+      if (type != LineType::Custom) {
+        const std::array<double, 3> lo{std::min(x, nx), std::min(y, ny), nz - h}, hi{std::max(x, nx), std::max(y, ny), nz};
+        for (std::size_t a = 0; a < 3; ++a) {
+          p.min[a] = have_box ? std::min(p.min[a], lo[a]) : lo[a];
+          p.max[a] = have_box ? std::max(p.max[a], hi[a]) : hi[a];
+        }
+        have_box = true;
       }
-      have_box = true;
       p.filament_mm += de;
     } else {
       m.type = LineType::Travel;

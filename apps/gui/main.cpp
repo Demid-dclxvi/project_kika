@@ -14,6 +14,7 @@
 #include <QSurfaceFormat>
 #include <QTranslator>
 
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -111,6 +112,31 @@ QScrollBar::handle:vertical { background: #cfd0ca; border-radius: 4px; min-heigh
 QScrollBar::handle:vertical:hover { background: #a9aaa6; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+
+QTabBar#mainTabs { background: transparent; }
+QTabBar#mainTabs::tab { background: transparent; color: #61646b; border: none; border-bottom: 3px solid transparent;
+  padding: 16px 14px 13px 14px; font-weight: 600; font-size: 14px; }
+QTabBar#mainTabs::tab:hover { color: #16181b; }
+QTabBar#mainTabs::tab:selected { color: #16181b; border-bottom: 3px solid #eb6834; }
+QFrame#busyStrip { background: #ffffff; border: none; border-bottom: 1px solid #dfe0da; }
+QFrame#settingsPanel, QWidget#settingsBody, QScrollArea#settingsScroll { background: #f1f1ee; }
+QFrame#settingsPanel { border: none; border-right: 1px solid #dfe0da; }
+QLabel#groupTitle { font-weight: 600; font-size: 12px; color: #16181b; padding-top: 2px; }
+QFrame#pageSeg { background: #ebebe6; border-radius: 8px; }
+QPushButton[cls="page"] { background: transparent; border: none; border-radius: 6px; padding: 5px 0; font-size: 11px; }
+QPushButton[cls="page"]:hover { background: #dfe0da; }
+QPushButton[cls="page"]:checked { background: #16181b; color: #ffffff; }
+QPushButton[cls="bigQuiet"] { padding: 11px 14px; font-size: 15px; font-weight: 600; }
+QScrollArea#sidePanel, QWidget#sideInner, QScrollArea#printerSide { background: #f1f1ee; border: none; }
+QScrollArea#sidePanel { border-left: 1px solid #dfe0da; }
+QScrollArea#printerSide { border-right: 1px solid #dfe0da; }
+QFrame#staleBanner { background: #fdeccd; border: none; border-bottom: 1px solid #f2d7a6; }
+QWidget#webPlaceholder { background: #e9ebe6; }
+QMenu { background: #ffffff; border: 1px solid #dfe0da; padding: 4px; }
+QMenu::item { padding: 6px 18px; border-radius: 5px; }
+QMenu::item:selected { background: #16181b; color: #ffffff; }
+QMenu::item:disabled { color: #a9aaa6; }
+QMenu::separator { height: 1px; background: #dfe0da; margin: 4px 8px; }
 )";
 
 // Светлая палитра (как у прототипа): окно не перекрашивается тёмной темой системы.
@@ -169,6 +195,13 @@ void usage() {
                "  --send               отправить G-code на принтер без запуска\n"
                "  --send-print         отправить и начать печать (без подтверждения!)\n"
                "  --printer-shot ФАЙЛ  снимок окна принтера\n"
+               "  --tab ВКЛАДКА        prepare, preview, strength, printer — для снимка\n"
+               "  --color РАСКРАСКА    предпросмотр: type, speed, flow, width, height, fan, layer_time\n"
+               "  --layers С:ПО        предпросмотр: слои с … по … (с 1; 0 — последний)\n"
+               "  --set КЛЮЧ=ЗНАЧЕНИЕ  настройка печати (как в kika settings) — и нарезать заново\n"
+               "  --scale K[,K,K]      масштаб детали — и нарезать заново\n"
+               "  --move X,Y           центр детали на столе, мм — и нарезать заново\n"
+               "  --lay X,Y            положить деталь на грань под точкой вида «Подготовка» — и нарезать\n"
                "  --screenshot ФАЙЛ    снимок окна и выход (код 1, если были ошибки)\n"
                "  --size ШxВ           размер окна\n";
 }
@@ -189,6 +222,8 @@ int main(int argc, char** argv) {
   fmt.setDepthBufferSize(24);
   fmt.setSamples(4);
   QSurfaceFormat::setDefaultFormat(fmt);
+  // общие контексты OpenGL: встроенный браузер (Qt WebEngine) рядом с 3D-видами
+  QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
   QApplication::setStyle(QStyleFactory::create("Fusion"));
   QApplication app(argc, argv);
   QApplication::setApplicationName("Kika");
@@ -311,6 +346,63 @@ int main(int argc, char** argv) {
       script.send_print = scripted = true;
     } else if (a == "--printer-shot") {
       script.printer_shot = next();
+      scripted = true;
+    } else if (a == "--tab") {
+      const QString v = next();
+      const QStringList names = {"prepare", "preview", "strength", "printer"};
+      const auto k = names.indexOf(v);
+      if (k < 0) {
+        std::cerr << "kika-gui: --tab ожидает prepare, preview, strength или printer\n";
+        return 2;
+      }
+      script.tab = static_cast<kika::gui::Tab>(k);
+      scripted = true;
+    } else if (a == "--color") {
+      script.color = next().toStdString();
+      scripted = true;
+    } else if (a == "--layers") {
+      double lo = 0, hi = 0;
+      if (!parse_pair(next(), ':', lo, hi)) {
+        std::cerr << "kika-gui: --layers ожидает С:ПО, например 1:20 (0 — последний слой)\n";
+        return 2;
+      }
+      script.layers = std::pair<int, int>{static_cast<int>(lo), static_cast<int>(hi)};
+      scripted = true;
+    } else if (a == "--set") {
+      const QString v = next();
+      const auto eq = v.indexOf('=');
+      if (eq <= 0) {
+        std::cerr << "kika-gui: --set ожидает КЛЮЧ=ЗНАЧЕНИЕ\n";
+        return 2;
+      }
+      script.sets.emplace_back(v.left(eq).toStdString(), v.mid(eq + 1).toStdString());
+      scripted = true;
+    } else if (a == "--scale") {
+      const QStringList parts = next().split(',');
+      std::array<double, 3> k{1, 1, 1};
+      bool ok = parts.size() == 1 || parts.size() == 3;
+      for (int j = 0; ok && j < 3; ++j) k[static_cast<std::size_t>(j)] = parts[parts.size() == 1 ? 0 : j].toDouble(&ok);
+      if (!ok) {
+        std::cerr << "kika-gui: --scale ожидает K или KX,KY,KZ, например 1.5\n";
+        return 2;
+      }
+      script.scale = k;
+      scripted = true;
+    } else if (a == "--lay") {
+      double x = 0, y = 0;
+      if (!parse_pair(next(), ',', x, y)) {
+        std::cerr << "kika-gui: --lay ожидает X,Y — доли ширины и высоты вида «Подготовка»\n";
+        return 2;
+      }
+      script.lay = std::pair<double, double>{x, y};
+      scripted = true;
+    } else if (a == "--move") {
+      double x = 0, y = 0;
+      if (!parse_pair(next(), ',', x, y)) {
+        std::cerr << "kika-gui: --move ожидает X,Y — центр детали на столе, мм\n";
+        return 2;
+      }
+      script.move = std::array<double, 2>{x, y};
       scripted = true;
     } else if (a == "--screenshot") {
       script.screenshot = next();

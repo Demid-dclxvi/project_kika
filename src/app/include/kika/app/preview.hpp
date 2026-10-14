@@ -84,7 +84,7 @@ struct Preview {
   std::optional<double> cost;      // если слайсер её посчитал
   double density = 1.24, filament_diameter = 1.75;
   std::string slicer;              // кто нарезал (из первой строки), пусто — неизвестно
-  std::array<double, 3> min{0, 0, 0}, max{0, 0, 0};  // габарит выдавливания
+  std::array<double, 3> min{0, 0, 0}, max{0, 0, 0};  // габарит выдавливания (без «прочего» — прочистки и т. п.)
   std::size_t retractions = 0;
 
   bool empty() const { return layers.empty(); }

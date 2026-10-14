@@ -170,6 +170,22 @@ class Frame : public QFrame {
   }
 };
 
+// Подпись в одну строку, которая не помещается, — с многоточием (полный текст — в подсказке).
+class ElideLabel : public QLabel {
+ public:
+  explicit ElideLabel(const QString& text) : QLabel(text) {
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    setToolTip(text);
+  }
+
+ protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter p(this);
+    p.setPen(palette().color(QPalette::WindowText));
+    p.drawText(rect(), Qt::AlignLeft | Qt::AlignVCenter, fontMetrics().elidedText(text(), Qt::ElideRight, width()));
+  }
+};
+
 inline QLabel* make_label(const QString& text, const char* name = nullptr, bool wrap = true) {
   auto* l = new QLabel(text);
   if (name) l->setObjectName(name);

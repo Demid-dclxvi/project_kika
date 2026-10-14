@@ -11,6 +11,7 @@
 | [Clipper2](https://github.com/AngusJohnson/Clipper2) | 2.0.1 (по baseline vcpkg) | BSL-1.0 | контуры слоёв в своём слайсере (`src/slicer`): объединение, смещение, пересечение | статически, через vcpkg |
 | [three.js](https://threejs.org) | r149 | MIT | 3D-просмотр в HTML-отчёте | файл `src/report/web/vendor/three.min.js` встраивается в программу и в каждый отчёт; уведомление об авторских правах — в начале файла, текст лицензии — `three.LICENSE.txt` рядом |
 | [Qt](https://www.qt.io) — модули Core, Gui, Widgets, OpenGL, OpenGLWidgets | 6.8 (Windows), от 6.4 (Linux) | LGPL-3.0 | окно `kika-gui` | динамически: библиотеки Qt6*.dll лежат рядом с программой отдельными файлами; модули под GPL и коммерческие не используются |
+| [Qt WebEngine](https://doc.qt.io/qt-6/qtwebengine-index.html) — модуль WebEngineWidgets и то, что ему нужно (WebEngineCore, WebChannel, Positioning, Quick, Qml, Network) | как Qt | LGPL-3.0; Chromium внутри — BSD-3-Clause и другие разрешительные лицензии | веб-интерфейс принтера во вкладке «Принтер» (`apps/gui/web_pane.cpp`); сборка без него — `-DKIKA_WITH_WEBENGINE=OFF`, тогда страница открывается в браузере | динамически, как остальной Qt: Qt6WebEngine*.dll, `QtWebEngineProcess.exe` и ресурсы рядом с программой; в папке программы — `licenses/QtWebEngine-Chromium.txt` |
 | [OpenCascade](https://github.com/Open-Cascade-SAS/OCCT) (OCCT) | 8.0.1 (по baseline vcpkg) | LGPL-2.1 с исключением OCCT | чтение STEP в сборке с окном (`src/geometry/src/step.cpp`): STEP → тела → треугольная сетка | динамически, через vcpkg (свой триплет `cmake/triplets`): библиотеки TK*.dll лежат рядом с программой отдельными файлами; `kika.exe` из обычной сборки — без OpenCascade и без STEP |
 | Mesa llvmpipe (`opengl32sw.dll` из поставки Qt) | из поставки Qt | MIT | программный OpenGL для окна на Windows без драйвера видеокарты | отдельная DLL, загружается Qt при необходимости |
 | Среда выполнения Visual C++ (`msvcp140*.dll`, `vcruntime140*.dll`) | из Visual Studio 2022 | лицензия Visual Studio (распространяемые файлы) | только папка с окном на Windows | DLL рядом с программой; `kika.exe` из обычной сборки — без неё |
@@ -28,7 +29,8 @@ Qt подключается не через vcpkg: LGPL требует дина�
 - библиотеки Qt — отдельные файлы рядом с программой; их можно заменить своей сборкой Qt той же версии, программа с ней заработает;
 - Qt не изменялся; исходники — на [download.qt.io](https://download.qt.io/official_releases/qt/), ссылка есть в `README.txt` в папке программы;
 - в папке программы — тексты LGPL-3.0 и GPL-3.0 (`licenses/`) и этот файл; «О программе» → «О Qt» показывает версию и лицензию Qt;
-- модули Qt под GPL (Qt Charts, Qt Quick 3D и т. п.) не используются; новые модули Qt добавлять только после проверки их лицензии.
+- модули Qt под GPL (Qt Charts, Qt Quick 3D и т. п.) не используются; новые модули Qt добавлять только после проверки их лицензии. Qt WebEngine, Qt WebChannel, Qt Positioning, Qt Quick и Qt Qml, которые тянет за собой встроенный браузер, доступны под LGPL-3.0;
+- Chromium в составе Qt WebEngine — под BSD-3-Clause и другими разрешительными лицензиями; ссылки на их тексты — в `licenses/QtWebEngine-Chromium.txt`.
 
 ## Запланированы
 
@@ -42,7 +44,8 @@ Qt подключается не через vcpkg: LGPL требует дина�
 
 | Что | Лицензия | Чем заменяем |
 | --- | --- | --- |
-| OrcaSlicer, PrusaSlicer, QIDI Studio (код и профили) | AGPL-3.0 | свой слайсер; профиль QIDI Q2 и его стартовый код — свои, по параметрам макроса PRINT_START прошивки принтера |
+| OrcaSlicer, PrusaSlicer, QIDI Studio (код и профили) | AGPL-3.0 | свой слайсер; профиль QIDI Q2 и его стартовый код — свои, по параметрам макроса PRINT_START прошивки принтера. От Orca взяты только названия и устройство настроек (страницы «Качество», «Прочность», «Скорость», «Поддержки», «Прочее», ключи вроде `top_shell_thickness` в G-code) и вид окна — это не код; алгоритмы (монотонный верх, мосты, глажка, предпросмотр) написаны заново |
+| Fluidd, Mainsail | GPL-3.0 | не входят в программу: вкладка «Принтер» показывает веб-интерфейс, который работает на самом принтере |
 | Moonraker (код) | GPL-3.0 | свой клиент его HTTP API (`src/printer`); сам Moonraker запускался только для проверки, в программу не входит |
 | libbgcode | AGPL-3.0 | свой декодер .bgcode по открытой спецификации |
 | TetGen | AGPL-3.0 | fTetWild |

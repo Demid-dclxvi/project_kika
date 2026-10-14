@@ -1,10 +1,11 @@
 #pragma once
-// Принтер по сети (Klipper, Moonraker): адрес и поиск в сети, состояние и температуры, отправка
-// G-code с запуском печати, пауза, продолжение, отмена. Сеть — в фоновых потоках, результат
+// Принтер по сети (Klipper, Moonraker) — панель вкладки «Принтер»: адрес и поиск в сети,
+// состояние и температуры, отправка G-code с запуском печати, пауза, продолжение, отмена; адрес
+// веб-интерфейса принтера (Fluidd, Mainsail) для вида справа. Сеть — в фоновых потоках, результат
 // возвращается в окно через очередь событий.
 
-#include <QDialog>
 #include <QString>
+#include <QWidget>
 
 #include <atomic>
 #include <functional>
@@ -32,13 +33,23 @@ struct PrintPayload {
   QString printer_name;     // для какого принтера нарезан
 };
 
-class PrinterDialog : public QDialog {
+class PrinterPanel : public QWidget {
  public:
-  explicit PrinterDialog(QWidget* parent = nullptr);
-  ~PrinterDialog() override;
+  explicit PrinterPanel(QWidget* parent = nullptr);
+  ~PrinterPanel() override;
 
-  // Источник G-code: вызывается в фоновом потоке (может резать модель). what — для подписи.
+  // Источник G-code: вызывается в фоновом потоке. what — для подписи.
   void set_source(std::function<PrintPayload()> make, const QString& what);
+  // Отправить (start — и начать печать, с подтверждением). Не подключено — сначала подключиться
+  // по сохранённому адресу. then(успех).
+  void send_now(bool start, std::function<void(bool)> then = {});
+  bool connected() const { return conn_.has_value(); }
+  bool has_address() const;
+  // Подключиться по адресу из поля (если ещё нет).
+  void connect_saved();
+  // Веб-интерфейс принтера: адрес из поля или по адресу Moonraker; пусто — не подключено.
+  QString web_url() const;
+  std::function<void(const QString& url)> on_web;
   // Для сценария проверки: подключиться, отправить (start — с запуском), затем done(успех).
   void run_script(const QString& address, bool send, bool start, std::function<void(bool)> done);
 
@@ -61,6 +72,7 @@ class PrinterDialog : public QDialog {
 
   QLineEdit* address_ = nullptr;
   QLineEdit* key_ = nullptr;
+  QLineEdit* web_ = nullptr;
   QComboBox* found_ = nullptr;
   QPushButton* btn_connect_ = nullptr;
   QPushButton* btn_find_ = nullptr;

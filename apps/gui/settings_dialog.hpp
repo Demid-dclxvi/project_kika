@@ -1,5 +1,6 @@
 #pragma once
-// Все настройки нарезки: вкладки «Печать», «Пластик», «Принтер». Поля строятся по таблице
+// Настройки нарезки в отдельном окне: «Принтер» и «Пластик» (кнопки ⚙ в панели слева) или все
+// разделы сразу. Внутри раздела — страницы как в OrcaSlicer. Поля строятся по таблице
 // slicer::fields(), свои профили — app::profile_store (папка настроек программы).
 
 #include <QDialog>
@@ -19,7 +20,8 @@ namespace kika::gui {
 
 class SettingsDialog : public QDialog {
  public:
-  SettingsDialog(const slicer::Settings& s, slicer::Section first, QWidget* parent = nullptr);
+  // only — показать только раздел first.
+  SettingsDialog(const slicer::Settings& s, slicer::Section first, QWidget* parent = nullptr, bool only = false);
   const slicer::Settings& settings() const { return s_; }
 
  private:

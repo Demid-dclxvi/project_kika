@@ -1,0 +1,17 @@
+Qt WebEngine и Chromium
+=======================
+
+Вкладка «Принтер» показывает веб-интерфейс принтера (Fluidd, Mainsail) встроенным браузером
+Qt WebEngine. Он входит в Qt и распространяется под LGPL-3.0 (текст — LGPL-3.0.txt в этой папке),
+подключён динамически: Qt6WebEngineCore.dll, Qt6WebEngineWidgets.dll, QtWebEngineProcess.exe и
+папка resources лежат рядом с программой отдельными файлами и могут быть заменены своей сборкой
+Qt той же версии. Qt WebEngine не изменялся.
+
+Qt WebEngine построен на Chromium. Chromium и его сторонние компоненты распространяются под
+BSD-3-Clause и другими разрешительными лицензиями; их полный список с текстами — в документации
+Qt WebEngine (раздел Licenses and Attributions):
+  https://doc.qt.io/qt-6/qtwebengine-licensing.html
+и в исходниках Qt WebEngine (src/3rdparty/chromium, файлы LICENSE и README.chromium):
+  https://download.qt.io/official_releases/qt/
+
+Сборка Qt WebEngine из официальной поставки Qt — без закрытых кодеков (proprietary codecs).

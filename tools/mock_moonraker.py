@@ -91,9 +91,39 @@ class Handler(BaseHTTPRequestHandler):
     def error(self, status, msg):
         self.reply({"error": {"code": status, "message": msg}}, status, wrap=False)
 
+    def page(self):
+        # простая страница вместо Fluidd/Mainsail — для вкладки «Принтер» без настоящего принтера
+        p = progress()
+        state = STATE["state"]
+        name = STATE["filename"] or "—"
+        html = f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<title>mock-q2 — имитация Moonraker</title><meta http-equiv="refresh" content="3">
+<style>body{{font-family:sans-serif;background:#1e2227;color:#e8e8e8;margin:0}}
+header{{background:#2b3038;padding:14px 20px;font-weight:600}} main{{padding:20px;display:grid;
+grid-template-columns:1fr 1fr;gap:16px}} .card{{background:#2b3038;border-radius:8px;padding:16px}}
+.bar{{height:10px;background:#3a404a;border-radius:5px}} .fill{{height:10px;background:#2ea8df;border-radius:5px;
+width:{p * 100:.0f}%}} h3{{margin:0 0 10px 0;font-size:14px;color:#9aa3ad;text-transform:uppercase}}</style></head>
+<body><header>mock-q2 · имитация веб-интерфейса принтера (Fluidd, Mainsail)</header><main>
+<div class="card"><h3>Печать</h3><p>Состояние: <b>{state}</b></p><p>Файл: {name}</p>
+<div class="bar"><div class="fill"></div></div><p>{p * 100:.0f} %</p></div>
+<div class="card"><h3>Температуры</h3><p>Сопло: {STATE["nozzle_target"] or 25:.0f} °C</p>
+<p>Стол: {STATE["bed_target"] or 24:.0f} °C</p><p>Камера: 31 °C</p></div>
+<div class="card"><h3>Камера</h3><p style="color:#9aa3ad">нет изображения в имитации</p></div>
+<div class="card"><h3>Консоль</h3><p style="font-family:monospace;color:#9aa3ad">// Klipper: ready</p></div>
+</main></body></html>"""
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         u = urlparse(self.path)
         with LOCK:
+            if u.path in ("/", "/index.html"):
+                return self.page()
             if u.path == "/server/info":
                 return self.reply({"klippy_connected": True, "klippy_state": "ready", "moonraker_version": "mock"})
             if u.path == "/printer/info":

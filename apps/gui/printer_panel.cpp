@@ -1,7 +1,7 @@
-// Окно принтера: Moonraker по сети. Без moc: сигналы — лямбдами, фоновая работа — std::thread,
+// Панель принтера: Moonraker по сети. Без moc: сигналы — лямбдами, фоновая работа — std::thread,
 // ответ в поток окна — QMetaObject::invokeMethod на приложение с проверкой, что окно живо.
 
-#include "printer_dialog.hpp"
+#include "printer_panel.hpp"
 
 #include <QApplication>
 #include <QComboBox>
@@ -46,7 +46,7 @@ void post(std::function<void()> fn) {
 }  // namespace
 
 template <class R>
-void PrinterDialog::background(std::function<R()> work, std::function<void(std::optional<R>, QString)> done) {
+void PrinterPanel::background(std::function<R()> work, std::function<void(std::optional<R>, QString)> done) {
   auto alive = alive_;
   std::thread([alive, work = std::move(work), done = std::move(done)]() mutable {
     std::optional<R> r;
@@ -62,11 +62,10 @@ void PrinterDialog::background(std::function<R()> work, std::function<void(std::
   }).detach();
 }
 
-PrinterDialog::PrinterDialog(QWidget* parent) : QDialog(parent), alive_(std::make_shared<std::atomic<bool>>(true)) {
-  setWindowTitle("Принтер");
-  resize(560, 520);
+PrinterPanel::PrinterPanel(QWidget* parent) : QWidget(parent), alive_(std::make_shared<std::atomic<bool>>(true)) {
+  setObjectName("printerPanel");
   auto* v = new QVBoxLayout(this);
-  v->setContentsMargins(18, 16, 18, 16);
+  v->setContentsMargins(16, 14, 16, 14);
   v->setSpacing(10);
 
   v->addWidget(make_label("Подключение", "itemTitle", false));
@@ -89,6 +88,14 @@ PrinterDialog::PrinterDialog(QWidget* parent) : QDialog(parent), alive_(std::mak
   key_->setPlaceholderText("Ключ API Moonraker — только если принтер его требует");
   key_->setEchoMode(QLineEdit::Password);
   v->addWidget(key_);
+  web_ = new QLineEdit(st.value("printer/web").toString());
+  web_->setPlaceholderText("Веб-интерфейс: по адресу принтера");
+  web_->setToolTip("Адрес страницы принтера (Fluidd, Mainsail) для вида справа. Пусто — http://адрес принтера/");
+  v->addWidget(web_);
+  connect(web_, &QLineEdit::editingFinished, this, [this] {
+    QSettings("Kika", "kika-gui").setValue("printer/web", web_->text().trimmed());
+    if (on_web && conn_) on_web(web_url());
+  });
 
   v->addSpacing(4);
   printer_label_ = make_label("Не подключено.", "itemTitle", false);
@@ -161,31 +168,68 @@ PrinterDialog::PrinterDialog(QWidget* parent) : QDialog(parent), alive_(std::mak
   update_buttons();
 }
 
-PrinterDialog::~PrinterDialog() { *alive_ = false; }
+PrinterPanel::~PrinterPanel() { *alive_ = false; }
 
-void PrinterDialog::showEvent(QShowEvent* e) {
-  QDialog::showEvent(e);
-  if (conn_) timer_->start();
+void PrinterPanel::showEvent(QShowEvent* e) {
+  QWidget::showEvent(e);
+  if (conn_) {
+    timer_->start();
+    poll();
+  }
 }
 
-void PrinterDialog::hideEvent(QHideEvent* e) {
+void PrinterPanel::hideEvent(QHideEvent* e) {
   timer_->stop();
-  QDialog::hideEvent(e);
+  QWidget::hideEvent(e);
 }
 
-void PrinterDialog::set_source(std::function<PrintPayload()> make, const QString& what) {
+bool PrinterPanel::has_address() const { return !address_->text().trimmed().isEmpty(); }
+
+void PrinterPanel::connect_saved() {
+  if (!conn_ && busy_ == 0 && has_address()) connect_printer();
+}
+
+QString PrinterPanel::web_url() const {
+  const QString own = web_->text().trimmed();
+  if (!own.isEmpty()) return own.contains("://") ? own : "http://" + own;
+  if (!conn_) return {};
+  // Moonraker на своём порту 7125 — страница принтера на 80; на другом порту — там же
+  const QString host = qs(conn_->host);
+  return conn_->port == 7125 || conn_->port == 80 ? "http://" + host + "/" : QString("http://%1:%2/").arg(host).arg(conn_->port);
+}
+
+void PrinterPanel::send_now(bool start, std::function<void(bool)> then) {
+  if (conn_) {
+    send(start, true, std::move(then));
+    return;
+  }
+  if (!has_address()) {
+    set_message("Введите адрес принтера и нажмите «Подключить».", true);
+    if (then) then(false);
+    return;
+  }
+  connect_printer([this, start, then](bool ok) {
+    if (!ok) {
+      if (then) then(false);
+      return;
+    }
+    send(start, true, then);
+  });
+}
+
+void PrinterPanel::set_source(std::function<PrintPayload()> make, const QString& what) {
   source_ = std::move(make);
   source_label_->setText(source_ ? "Отправить: " + what : QString("Нечего отправлять: откройте модель или G-code."));
   update_buttons();
 }
 
-void PrinterDialog::set_message(const QString& text, bool error) {
+void PrinterPanel::set_message(const QString& text, bool error) {
   message_->setText(text);
   message_->setObjectName(error ? "warn" : "hint");
   repolish(message_);
 }
 
-void PrinterDialog::update_buttons() {
+void PrinterPanel::update_buttons() {
   const bool connected = conn_.has_value() && info_ && info_->ready();
   const bool printing = status_ && status_->busy();
   btn_connect_->setEnabled(busy_ == 0);
@@ -197,7 +241,7 @@ void PrinterDialog::update_buttons() {
   btn_cancel_->setEnabled(connected && printing && busy_ == 0);
 }
 
-void PrinterDialog::connect_printer(std::function<void(bool)> then) {
+void PrinterPanel::connect_printer(std::function<void(bool)> then) {
   const QString text = address_->text().trimmed();
   const auto addr = printer::parse_address(ss(text));
   if (!addr) {
@@ -250,11 +294,12 @@ void PrinterDialog::connect_printer(std::function<void(bool)> then) {
         update_buttons();
         if (isVisible()) timer_->start();
         poll();
+        if (on_web) on_web(web_url());
         if (then) then(true);
       });
 }
 
-void PrinterDialog::discover() {
+void PrinterPanel::discover() {
   ++busy_;
   set_message("Ищу принтеры в сети — до полуминуты…");
   update_buttons();
@@ -283,7 +328,7 @@ void PrinterDialog::discover() {
       });
 }
 
-void PrinterDialog::poll() {
+void PrinterPanel::poll() {
   if (!conn_ || polling_ || !info_ || !info_->ready()) return;
   polling_ = true;
   const auto c = *conn_;
@@ -298,7 +343,7 @@ void PrinterDialog::poll() {
                                      });
 }
 
-void PrinterDialog::show_status(const printer::PrinterStatus& st) {
+void PrinterPanel::show_status(const printer::PrinterStatus& st) {
   status_ = st;
   QString s = state_text(st.state);
   if (st.busy() || st.state == "complete") {
@@ -319,7 +364,7 @@ void PrinterDialog::show_status(const printer::PrinterStatus& st) {
   update_buttons();
 }
 
-void PrinterDialog::command(const QString& what, std::function<void(const printer::Moonraker&)> fn) {
+void PrinterPanel::command(const QString& what, std::function<void(const printer::Moonraker&)> fn) {
   if (!conn_) return;
   ++busy_;
   set_message(what + "…");
@@ -338,7 +383,7 @@ void PrinterDialog::command(const QString& what, std::function<void(const printe
       });
 }
 
-void PrinterDialog::send(bool start, bool confirm, std::function<void(bool)> then) {
+void PrinterPanel::send(bool start, bool confirm, std::function<void(bool)> then) {
   if (!conn_ || !source_ || sending_) {
     if (then) then(false);
     return;
@@ -421,7 +466,7 @@ void PrinterDialog::send(bool start, bool confirm, std::function<void(bool)> the
       });
 }
 
-void PrinterDialog::run_script(const QString& address, bool do_send, bool start, std::function<void(bool)> done) {
+void PrinterPanel::run_script(const QString& address, bool do_send, bool start, std::function<void(bool)> done) {
   address_->setText(address);
   connect_printer([this, do_send, start, done](bool ok) {
     if (!ok || !do_send) {

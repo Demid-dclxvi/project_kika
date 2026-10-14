@@ -1,7 +1,12 @@
 #pragma once
-// Главное окно: слева пошаговая панель задания (деталь, материал, закрепления, нагрузки, расчёт,
-// результаты), справа 3D-вид с инструментами выбора граней. Повторяет приложение прототипа
-// (fdmfea/web/app.html, app.js), но ядро считает на C++ в фоновом потоке.
+// Главное окно — вкладки, как в OrcaSlicer:
+//   «Подготовка» — деталь на столе принтера: положение, поворот, масштаб;
+//   «Предпросмотр» — нарезка по слоям: типы линий, время, пластик; отправка на принтер;
+//   «Расчёт нагрузок» — пошаговая панель задания (материал, закрепления, нагрузки, расчёт,
+//     результаты, подбор печати) и 3D-вид с выбором граней — как приложение прототипа
+//     (fdmfea/web/app.html, app.js);
+//   «Принтер» — состояние принтера и его веб-интерфейс.
+// В первых трёх вкладках слева — панель настроек печати. Ядро считает в фоновом потоке.
 
 #include <QMainWindow>
 #include <QPointer>
@@ -20,6 +25,7 @@
 #include "kika/advisor/advisor.hpp"
 #include "kika/analysis/analysis.hpp"
 #include "kika/app/job_model.hpp"
+#include "kika/app/preview.hpp"
 #include "kika/app/roads.hpp"
 #include "kika/app/scene.hpp"
 #include "kika/geometry/import.hpp"
@@ -27,6 +33,7 @@
 #include "kika/slicer/profiles.hpp"
 #include "kika/util/json.hpp"
 
+class QAction;
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
@@ -39,6 +46,8 @@ class QProgressBar;
 class QPushButton;
 class QScrollArea;
 class QSlider;
+class QStackedWidget;
+class QTabBar;
 class QThread;
 class QTimer;
 class QVBoxLayout;
@@ -47,7 +56,14 @@ class QWidget;
 namespace kika::gui {
 
 class Viewer;
-class PrinterDialog;
+class PlateView;
+class PrinterPanel;
+class RangeSlider;
+class SettingsPanel;
+class WebPane;
+
+// Вкладки окна.
+enum class Tab { Prepare = 0, Preview = 1, Strength = 2, Printer = 3 };
 
 // Что сделать после запуска — для проверок окна без человека (снимок экрана в CI).
 struct StartupScript {
@@ -74,6 +90,13 @@ struct StartupScript {
   bool send = false;                // отправить G-code на принтер (без запуска)
   bool send_print = false;          // отправить и начать печать (без подтверждения — для проверок)
   QString printer_shot;             // снимок окна принтера
+  std::optional<Tab> tab;           // вкладка для снимка
+  std::string color;                // предпросмотр: раскраска (type, speed, flow, width, height, fan, layer_time)
+  std::optional<std::pair<int, int>> layers;  // предпросмотр: слои с … по … (с 1; 0 — последний)
+  std::vector<std::pair<std::string, std::string>> sets;  // настройки печати ключ=значение (и нарезать заново)
+  std::optional<std::array<double, 3>> scale;  // масштаб детали (и нарезать заново)
+  std::optional<std::array<double, 2>> move;   // положение детали на столе (и нарезать заново)
+  std::optional<std::pair<double, double>> lay;  // положить на грань под точкой вида «Подготовка» (доли) — и нарезать
 };
 
 class MainWindow : public QMainWindow {
@@ -99,6 +122,29 @@ class MainWindow : public QMainWindow {
   QWidget* build_top_bar();
   QWidget* build_panel();
   QWidget* build_stage();
+  QWidget* build_prepare_page();
+  QWidget* build_preview_page();
+  QWidget* build_printer_page();
+  void set_tab(Tab t);
+  Tab tab() const;
+  QWidget* tab_view() const;  // 3D-вид текущей вкладки (для подсказок и снимка)
+  // подготовка
+  void render_prepare();
+  void read_placement();
+  void on_part_drag(double dx, double dy, bool done);
+  void lay_on_face(const geometry::Vec3& normal);
+  void reset_placement(bool all);
+  // предпросмотр
+  void set_preview(std::shared_ptr<const app::Preview> p);
+  void render_preview();
+  void render_legend();
+  void apply_layers();
+  void send_to_printer(bool start);
+  // настройки печати слева
+  void on_settings_changed();
+  void render_slice_state();
+  // Нарезка устарела: настройки или положение детали изменены после неё.
+  bool slice_stale() const;
   void render_all();
   void render_model_info();
   void render_material();
@@ -133,12 +179,9 @@ class MainWindow : public QMainWindow {
   void rotate_part(int axis);
   void export_report(const QString& path = {});
   void about();
-  // настройки печати (все) и принтер по сети
+  // настройки печати и принтер по сети
   slicer::Filament job_filament() const;  // пластик для нарезки: свой из настроек или по материалу
-  void open_settings(slicer::Section first);
   void apply_settings(const slicer::Settings& s);
-  void fill_printer_combo();
-  void open_printer();
   void update_printer_source();
   void rebuild_mesh();
   void run_analysis();
@@ -158,12 +201,14 @@ class MainWindow : public QMainWindow {
     QString path;
     long long max_elems = 0;
     bool keep_job = false;
-    std::optional<std::array<double, 3>> turned_from;  // деталь повёрнута: прежние углы — поверхности переносятся
+    // деталь повёрнута или масштабирована: прежняя постановка — поверхности задания переносятся
+    std::optional<slicer::PrintJob> placed_from;
     std::function<void()> after;
     bool model = false;
     std::shared_ptr<const geometry::ImportedModel> mesh;
     slicer::PrintJob print;
     std::shared_ptr<const std::string> gcode;
+    bool show_preview = false;  // после нарезки — во вкладку «Предпросмотр»
   };
   void start_load(LoadPlan plan);
   void render_print_settings();
@@ -175,10 +220,9 @@ class MainWindow : public QMainWindow {
   void render_advice();
   void apply_candidate(std::size_t k);
   void refit_panel();
-  void read_print_settings();
   void update_print_state();
   void on_model_ready(std::shared_ptr<analysis::Model> model, const QString& path, long long max_elems, bool keep_job,
-                      std::optional<std::array<double, 3>> turned_from = std::nullopt);
+                      std::optional<slicer::PrintJob> placed_from = std::nullopt);
   bool apply_job_json(const json::Value& job);
   void open_job_file(const QString& path);
   // Задание: G-code или модель — из задания или source_override (файл, открытый вместе с заданием).
@@ -200,7 +244,9 @@ class MainWindow : public QMainWindow {
     std::vector<std::string> warnings;
   };
   std::optional<ModelSource> source_;
-  slicer::PrintJob print_ui_;  // настройки в панели (до «Нарезать заново» могут отличаться)
+  slicer::PrintJob print_ui_;  // настройки и положение детали сейчас (до «Нарезать» могут отличаться)
+  std::shared_ptr<const app::Preview> preview_;  // нарезка для вкладки «Предпросмотр»
+  app::PreviewView preview_view_;
   std::unique_ptr<app::Scene> scene_;
   std::unique_ptr<app::Roads> roads_;
   std::shared_ptr<analysis::AnalysisResult> results_;
@@ -230,22 +276,56 @@ class MainWindow : public QMainWindow {
   QThread* worker_ = nullptr;
   std::shared_ptr<std::atomic<bool>> cancel_ = std::make_shared<std::atomic<bool>>(false);
 
-  // виджеты
+  // виджеты: вкладки и общее
+  QTabBar* tabs_ = nullptr;
+  QStackedWidget* stack_ = nullptr;
+  SettingsPanel* settings_ = nullptr;
+  QWidget* busy_strip_ = nullptr;  // полоса хода фоновой работы под верхней панелью
+  QProgressBar* busy_bar_ = nullptr;
+  QLabel* busy_text_ = nullptr;
   Viewer* viewer_ = nullptr;
   QLabel* file_label_ = nullptr;
   QPushButton* btn_open_ = nullptr;
   QPushButton* btn_example_ = nullptr;
-  QPushButton* btn_open_job_ = nullptr;
-  QPushButton* btn_save_job_ = nullptr;
-  QPushButton* btn_report_ = nullptr;
-  QPushButton* btn_printer_ = nullptr;
-  PrinterDialog* printer_dlg_ = nullptr;
+  QPushButton* btn_file_ = nullptr;
+  QAction* act_open_job_ = nullptr;
+  QAction* act_save_job_ = nullptr;
+  QAction* act_report_ = nullptr;
+  QAction* act_save_gcode_ = nullptr;
+  // подготовка
+  PlateView* plate_ = nullptr;
+  QLabel* prep_info_ = nullptr;
+  QWidget* prep_box_ = nullptr;  // поля положения (только для модели)
+  QLabel* prep_note_ = nullptr;
+  std::array<QLineEdit*, 2> pos_edit_{};
+  std::array<QLineEdit*, 3> rot_edit_{};
+  std::array<QLineEdit*, 3> scale_edit_{};
+  std::array<QLineEdit*, 3> size_edit_{};
+  QCheckBox* uniform_ = nullptr;
+  QPushButton* btn_lay_ = nullptr;
+  QVBoxLayout* prep_warns_ = nullptr;
+  QLabel* fit_warn_ = nullptr;
+  // предпросмотр
+  PlateView* pview_ = nullptr;
+  RangeSlider* layer_slider_ = nullptr;
+  QSlider* move_slider_ = nullptr;
+  QLabel* move_label_ = nullptr;
+  QComboBox* color_combo_ = nullptr;
+  QVBoxLayout* legend_list_ = nullptr;
+  QLabel* totals_ = nullptr;
+  QLabel* layer_info_ = nullptr;
+  QFrame* stale_banner_ = nullptr;
+  QPushButton* btn_print_ = nullptr;
+  QPushButton* btn_send_ = nullptr;
   QPushButton* btn_save_gcode_ = nullptr;
-  QWidget* print_box_ = nullptr;
-  QComboBox* printer_combo_ = nullptr;
-  QComboBox* pattern_combo_ = nullptr;
-  QComboBox* support_combo_ = nullptr;
-  QCheckBox* support_bed_ = nullptr;
+  QCheckBox* auto_switch_ = nullptr;
+  QVBoxLayout* preview_warns_ = nullptr;
+  // принтер
+  PrinterPanel* printer_ = nullptr;
+  WebPane* web_ = nullptr;
+  // расчёт нагрузок
+  QLabel* strength_stale_ = nullptr;
+  QPushButton* btn_reslice_ = nullptr;
   QCheckBox* supports_on_ = nullptr;  // показ поддержек на нитях
   bool refit_pending_ = false;
   std::array<QPushButton*, 3> goal_btn_{};
@@ -254,15 +334,6 @@ class MainWindow : public QMainWindow {
   QLabel* advise_summary_ = nullptr;
   QVBoxLayout* advise_list_ = nullptr;
   std::shared_ptr<const advisor::Result> advice_;
-  QLineEdit* layer_edit_ = nullptr;
-  QLineEdit* walls_edit_ = nullptr;
-  QLineEdit* infill_edit_ = nullptr;
-  QLineEdit* top_edit_ = nullptr;
-  QLineEdit* bottom_edit_ = nullptr;
-  QLabel* rotate_label_ = nullptr;
-  QLabel* slice_info_ = nullptr;
-  QVBoxLayout* print_warns_ = nullptr;
-  QPushButton* btn_slice_ = nullptr;
   QScrollArea* panel_scroll_ = nullptr;
   QLabel* model_info_ = nullptr;
   QVBoxLayout* model_warns_ = nullptr;
