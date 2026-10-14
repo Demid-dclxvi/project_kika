@@ -16,6 +16,9 @@
 #include "kika/app/profile_store.hpp"
 #include "kika/app/scene.hpp"
 #include "kika/gcode/parser.hpp"
+#include "kika/geometry/mesh.hpp"
+#include "kika/slicer/print_job.hpp"
+#include "kika/slicer/slicer.hpp"
 #include "kika/util/json.hpp"
 
 using Catch::Matchers::WithinAbs;
@@ -200,6 +203,50 @@ TEST_CASE("Выбор переносится на сетку другой дет
   auto back = fine;
   kika::app::remap_faces(back, s2, s1);
   CHECK(jaccard(back.fixtures[0].faces, end) > 0.95);
+}
+
+TEST_CASE("Масштаб и поворот детали: закрепления и нагрузки остаются на своих гранях", "[app]") {
+  // брусок 40 × 10 × 10 плашмя → растянут по X в 1,5 раза; и он же стоя (X → Z) с масштабом по Z
+  auto model_of = [](const kika::slicer::PrintJob& pj) {
+    kika::geometry::TriangleMesh m;
+    for (int i = 0; i < 8; ++i) m.vertices.push_back({(i & 1) ? 40.0 : 0.0, (i & 2) ? 10.0 : 0.0, (i & 4) ? 10.0 : 0.0});
+    m.triangles = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+                   {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
+    auto s = pj.settings;
+    s.skirt = false;
+    s.infill_density = 0.3;
+    kika::analysis::ModelOptions o;
+    o.voxel = 2.0;
+    return kika::analysis::build_model(kika::gcode::parse(kika::slicer::slice(kika::slicer::placed(m, pj), s).gcode), o);
+  };
+  kika::slicer::PrintJob p0, p1, p2;
+  p1.scale = {1.5, 1, 1};
+  p2.rotate = {0, -90, 0};
+  p2.scale = {1, 1, 1.5};
+  const auto m0 = model_of(p0), m1 = model_of(p1), m2 = model_of(p2);
+  Scene s0(m0), s1(m1), s2(m2);
+  CHECK_THAT(s1.size()[0], WithinAbs(1.5 * s0.size()[0], 2.5));
+  auto job = kika::app::new_job();
+  kika::app::UiFixture fx;
+  fx.id = job.new_id();
+  fx.faces = s0.side(0);
+  job.fixtures.push_back(fx);
+  auto ld = kika::app::default_load("force", job.new_id());
+  ld.faces = s0.side(1);
+  job.cases[0].loads.push_back(ld);
+  // растяжение по X: торцы на месте, их площадь та же; направление силы не меняется
+  auto j1 = job;
+  kika::app::transform_job(j1, s0, s1, kika::slicer::change_between(p0, p1).r, kika::slicer::turn_between(p0.rotate, p1.rotate).r);
+  CHECK(jaccard(j1.fixtures[0].faces, s1.side(0)) > 0.95);
+  CHECK(jaccard(j1.cases[0].loads[0].faces, s1.side(1)) > 0.95);
+  CHECK_THAT(s1.area(j1.fixtures[0].faces), WithinRel(s0.area(job.fixtures[0].faces), 0.15));
+  CHECK(j1.cases[0].loads[0].dir == "-z");
+  // стоя и растянут по высоте: торец −X — внизу, +X — вверху; сила −Z поворачивается в +X
+  auto j2 = job;
+  kika::app::transform_job(j2, s0, s2, kika::slicer::change_between(p0, p2).r, kika::slicer::turn_between(p0.rotate, p2.rotate).r);
+  CHECK(jaccard(j2.fixtures[0].faces, s2.side(4)) > 0.95);
+  CHECK(jaccard(j2.cases[0].loads[0].faces, s2.side(5)) > 0.95);
+  CHECK(j2.cases[0].loads[0].dir == "+x");
 }
 
 TEST_CASE("Поворот детали на столе: закрепления и нагрузки поворачиваются вместе с ней", "[app]") {

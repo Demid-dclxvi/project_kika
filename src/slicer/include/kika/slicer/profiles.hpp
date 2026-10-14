@@ -37,13 +37,15 @@ struct FieldChoice {
 struct Field {
   Section section;
   std::string key;     // ключ JSON
-  std::string group;   // раздел в окне: «Слои и стенки», «Скорость»…
+  std::string page;    // страница в окне, как в OrcaSlicer: «Качество», «Прочность», «Скорость»…
+  std::string group;   // раздел страницы: «Высота слоя», «Ширина линий»…
   std::string label;   // по-русски
   std::string unit;    // «мм», «°C», «%»…
   std::string tip;     // подсказка, может быть пустой
   FieldKind kind = FieldKind::Number;
   double lo = 0, hi = 0;  // пределы в единицах показа
   double scale = 1;       // показ = значение × scale
+  bool advanced = false;  // тонкая настройка: в окне — только в режиме «Все настройки»
   std::vector<FieldChoice> choices;
   // Вариант: ключ из JSON (с синонимами, например zig-zag) → ключ из choices; пусто — нет такого.
   std::function<std::string(std::string_view)> canonical;
@@ -55,6 +57,8 @@ struct Field {
 
 const std::vector<Field>& fields();
 const Field* find_field(Section section, std::string_view key);
+// Страницы раздела по порядку (как в таблице).
+std::vector<std::string> pages(Section section);
 
 // Проверка значения поля; ошибка — текст по-русски (where — откуда, для сообщения), иначе пусто.
 std::string check_field(const Field& f, const json::Value& v, std::string_view where);

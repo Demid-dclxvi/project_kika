@@ -573,11 +573,13 @@ int cmd_settings(bool as_json) {
     for (const auto& f : kika::slicer::fields()) {
       Value o = Value::object();
       o["section"] = std::string(kika::slicer::section_key(f.section));
+      o["page"] = f.page;
       o["group"] = f.group;
       o["key"] = f.key;
       o["label"] = f.label;
       o["unit"] = f.unit;
       o["tip"] = f.tip;
+      o["advanced"] = f.advanced;
       if (f.kind == kika::slicer::FieldKind::Number || f.kind == kika::slicer::FieldKind::Integer) {
         o["min"] = f.lo;
         o["max"] = f.hi;
@@ -594,11 +596,12 @@ int cmd_settings(bool as_json) {
     return 0;
   }
   kika::slicer::Section sec = kika::slicer::Section::Printer;
-  std::string group;
+  std::string page, group;
   bool first = true;
   for (const auto& f : kika::slicer::fields()) {
     if (first || f.section != sec) {
       sec = f.section;
+      page.clear();
       group.clear();
       std::cout << (first ? "" : "\n") << "== " << kika::slicer::section_name(sec)
                 << (sec == kika::slicer::Section::Process ? " (ключи поля print)"
@@ -607,9 +610,14 @@ int cmd_settings(bool as_json) {
                 << "\n";
       first = false;
     }
+    if (f.page != page) {
+      page = f.page;
+      group.clear();
+      std::cout << "  [" << page << "]\n";
+    }
     if (f.group != group) {
       group = f.group;
-      std::cout << "  " << group << "\n";
+      std::cout << "   " << group << "\n";
     }
     if (f.kind == kika::slicer::FieldKind::Code) {
       std::cout << std::format("    {:<28} {}\n", f.key, f.label);

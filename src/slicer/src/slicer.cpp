@@ -35,7 +35,9 @@ using geometry::TriangleMesh;
 using geometry::Vec3;
 
 // Роль линии и её название в G-code (как у OrcaSlicer — их понимает разбор G-code).
-enum class Role { OuterWall, InnerWall, Solid, Top, Bottom, Sparse, Skirt, Brim, Support, SupportInterface };
+enum class Role {
+  OuterWall, InnerWall, Solid, Top, Bottom, Bridge, Sparse, Ironing, Skirt, Brim, Support, SupportInterface
+};
 
 const char* role_label(Role r) {
   switch (r) {
@@ -44,7 +46,9 @@ const char* role_label(Role r) {
     case Role::Solid: return "Internal solid infill";
     case Role::Top: return "Top surface";
     case Role::Bottom: return "Bottom surface";
+    case Role::Bridge: return "Bridge";
     case Role::Sparse: return "Sparse infill";
+    case Role::Ironing: return "Ironing";
     case Role::Skirt: return "Skirt";
     case Role::Brim: return "Brim";
     case Role::Support: return "Support";
@@ -57,9 +61,16 @@ struct Line {
   Role role;
   std::vector<Pt> pts;
   bool closed = false;
+  double width = 0.42;     // ширина валика, мм
+  double flow = 1.0;       // доля обычного сечения валика (мосты, глажка)
   std::vector<char> over;  // по отрезкам: над пустотой (нависание, мост); пусто — нигде
   int zone = -1;           // остров слоя: перемещение внутри него — без отката
 };
+
+// Шаг между соседними валиками ширины width при высоте слоя h (как в Slic3r/Orca).
+double spacing_of(double width, double h) { return width - h * (1.0 - std::numbers::pi / 4.0); }
+// Сечение валика: прямоугольник со скруглёнными боками, мм².
+double bead_area(double width, double h) { return (width - h) * h + std::numbers::pi * 0.25 * h * h; }
 
 // ---------------------------------------------------------------------------- сечения
 
@@ -243,7 +254,7 @@ void rotate_to_nearest(std::vector<Pt>& loop, const Pt& from) {
 }
 
 // Открытые линии — жадно: следующая та, чей ближайший конец ближе всего (линия может развернуться).
-void add_open_lines(std::vector<Line>& out, std::vector<std::vector<Pt>> lines, Role role, Pt& pos) {
+void add_open_lines(std::vector<Line>& out, std::vector<std::vector<Pt>> lines, Role role, double width, Pt& pos) {
   std::vector<char> done(lines.size(), 0);
   for (std::size_t n = 0; n < lines.size(); ++n) {
     std::size_t best = 0;
@@ -259,7 +270,77 @@ void add_open_lines(std::vector<Line>& out, std::vector<std::vector<Pt>> lines, 
     auto& l = lines[best];
     if (flip) std::reverse(l.begin(), l.end());
     pos = l.back();
-    out.push_back({role, std::move(l), false, {}});
+    out.push_back({role, std::move(l), false, width, 1.0, {}});
+  }
+}
+
+// Замкнутая линия, начатая у точки pos.
+void add_loop(std::vector<Line>& out, std::vector<Pt> pts, Role role, double width, Pt& pos) {
+  if (pts.size() < 3) return;
+  rotate_to_nearest(pts, pos);
+  pos = pts.front();
+  out.push_back({role, std::move(pts), true, width, 1.0, {}});
+}
+
+// Сплошная область рисунком pat под углом ang. У соединённых рисунков линии у перемычек короче на
+// полшага: пластика у края столько же, сколько без перемычек.
+void fill_surface(std::vector<Line>& out, const Paths64& area, SurfacePattern pat, double ang, Role role, double width,
+                  double h, Pt& pos) {
+  if (area.empty()) return;
+  const double spc = spacing_of(width, h);
+  switch (pat) {
+    case SurfacePattern::Concentric:
+      for (auto& l : concentric_loops(area, spc, width * width)) add_loop(out, std::move(l), role, width, pos);
+      return;
+    case SurfacePattern::Rectilinear:
+      add_open_lines(out, join_zigzag(hatch(area, spc, ang, 0.0, width), area, 3 * spc, spc / 2), role, width, pos);
+      return;
+    case SurfacePattern::Monotonic:
+    case SurfacePattern::MonotonicLine: {
+      const bool joined = pat == SurfacePattern::Monotonic;
+      // куски области по очереди — ближайший к соплу; в куске — монотонные участки, тоже по близости
+      auto pieces = islands(area);
+      std::vector<char> done(pieces.size(), 0);
+      for (std::size_t m = 0; m < pieces.size(); ++m) {
+        std::size_t best = 0;
+        double bd = 1e300;
+        for (std::size_t k = 0; k < pieces.size(); ++k) {
+          if (done[k]) continue;
+          for (const auto& p : pieces[k][0]) {
+            const double d = dist2({mm(p.x), mm(p.y)}, pos);
+            if (d < bd) bd = d, best = k;
+          }
+        }
+        done[best] = 1;
+        const Paths64& piece = pieces[best];
+        auto runs = monotonic_runs(hatch_rows(piece, spc, ang, 0.0, width));
+        std::vector<char> used(runs.size(), 0);
+        for (std::size_t r = 0; r < runs.size(); ++r) {
+          std::size_t pick = 0;
+          bool back = false;
+          double rd = 1e300;
+          for (std::size_t k = 0; k < runs.size(); ++k) {
+            if (used[k] || runs[k].empty()) continue;
+            const double d0 = dist2(runs[k].front().front(), pos), d1 = dist2(runs[k].back().back(), pos);
+            if (d0 < rd) rd = d0, pick = k, back = false;
+            if (d1 < rd) rd = d1, pick = k, back = true;
+          }
+          used[pick] = 1;
+          auto& run = runs[pick];
+          if (run.empty()) continue;
+          if (back) {
+            std::reverse(run.begin(), run.end());
+            for (auto& l : run) std::reverse(l.begin(), l.end());
+          }
+          if (joined) run = join_zigzag(std::move(run), piece, 3 * spc, spc / 2);
+          for (auto& l : run) {
+            pos = l.back();
+            out.push_back({role, std::move(l), false, width, 1.0, {}});
+          }
+        }
+      }
+      return;
+    }
   }
 }
 
@@ -337,6 +418,32 @@ void mark_over(Line& ln, const Area& zone) {
     any = any || over[i];
   }
   if (any) ln.over = std::move(over);
+}
+
+// Направление линий моста: из углов через 15° — тот, при котором больше линий опирается обоими
+// концами на нижний слой (конец продлевается на 1 мм). При равенстве — fallback.
+double bridge_angle(const Paths64& area, const Area& below, double spacing, double fallback) {
+  if (below.empty()) return fallback;
+  double best = fallback, best_score = -1e300;
+  for (int k = 0; k < 12; ++k) {
+    const double ang = fallback + 15.0 * k;
+    double score = 0;
+    for (const auto& l : hatch(area, std::max(spacing, 0.5), ang, 0.0, 0.0)) {
+      const Pt& p0 = l.front();
+      const Pt& p1 = l.back();
+      const double len = std::sqrt(dist2(p0, p1));
+      if (len < 1e-6) continue;
+      const double dx = (p1[0] - p0[0]) / len, dy = (p1[1] - p0[1]) / len;
+      const bool a0 = below.contains({p0[0] - dx, p0[1] - dy});
+      const bool a1 = below.contains({p1[0] + dx, p1[1] + dy});
+      score += (a0 && a1) ? len : -len;
+    }
+    if (score > best_score + 1e-9) {
+      best_score = score;
+      best = ang;
+    }
+  }
+  return best;
 }
 
 // Выпуклая оболочка (монотонная цепь), против часовой стрелки.
@@ -445,7 +552,7 @@ class Writer {
   }
 
   // Линия: скорость v, над пустотой — over_v и обдув over_fan (если больше текущего).
-  void extrude(const Line& ln, double width, double h, double v, double over_v, int over_fan, double accel, bool support,
+  void extrude(const Line& ln, double h, double v, double over_v, int over_fan, double accel, bool support,
                bool quiet = false) {
     const auto& pts = ln.pts;
     if (pts.size() < 2) return;
@@ -462,7 +569,7 @@ class Writer {
     }
     set_accel(accel);
     // площадь сечения валика: прямоугольник со скруглёнными боками (как в Slic3r/Orca)
-    const double area = (width - h) * h + std::numbers::pi * 0.25 * h * h;
+    const double area = bead_area(ln.width, h) * ln.flow;
     const double e_per_mm = area / fil_area_ * s_.filament.flow;
     const int layer_fan = fan_;
     double cur_f = -1;
@@ -563,7 +670,19 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
   s.layer_height = std::clamp(s.layer_height, 0.04, 0.8 * s.printer.nozzle);
   s.first_layer_height = std::clamp(s.first_layer_height, 0.04, 0.8 * s.printer.nozzle);
   s.line_width = std::clamp(s.line_width, 0.6 * s.printer.nozzle, 2.0 * s.printer.nozzle);
+  // ширина по видам линий: 0 — как line_width; первый слой: 0 — как у остальных слоёв
+  for (double* v : {&s.first_layer_width, &s.outer_wall_width, &s.inner_wall_width, &s.top_width, &s.sparse_width,
+                    &s.solid_width, &s.support_width})
+    if (*v > 0) *v = std::clamp(*v, 0.6 * s.printer.nozzle, 2.0 * s.printer.nozzle);
+  for (double* v : {&s.outer_wall_width, &s.inner_wall_width, &s.top_width, &s.sparse_width, &s.solid_width, &s.support_width})
+    if (*v <= 0) *v = s.line_width;
   s.infill_density = std::clamp(s.infill_density, 0.0, 1.0);
+  s.bridge_flow = std::clamp(s.bridge_flow, 0.3, 2.0);
+  s.ironing_flow = std::clamp(s.ironing_flow, 0.0, 1.0);
+  s.ironing_spacing = std::clamp(s.ironing_spacing, 0.03, 2.0);
+  s.small_perimeter_speed = std::clamp(s.small_perimeter_speed, 0.05, 1.0);
+  s.elephant_foot = std::clamp(s.elephant_foot, 0.0, 1.0);
+  s.skirt_layers = std::max(1, s.skirt_layers);
   if (s.filament.nozzle_temp > s.printer.max_nozzle_temp || s.filament.first_layer_nozzle_temp > s.printer.max_nozzle_temp) {
     res.warnings.push_back(std::format("Температура сопла для {} выше предела принтера — снижена до {:.0f} °C.",
                                        s.filament.type, s.printer.max_nozzle_temp));
@@ -602,9 +721,21 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
   for (std::size_t i = 0; i < n; ++i) mids[i] = tops[i] - 0.5 * hs[i];
   if (progress) progress(0.0, "Сечения слоёв");
   std::size_t open = 0;
-  const std::vector<Paths64> regions = slice_layers(mesh, mids, open, progress);
+  std::vector<Paths64> regions = slice_layers(mesh, mids, open, progress);
   if (open > 0)
     res.warnings.push_back(std::format("Сетка не замкнута: в {} местах контур слоя не сошёлся — там будут пустоты.", open));
+  // поправки размеров: наружный контур и отверстия (вся деталь), «слоновья нога» (только первый слой)
+  if (s.xy_contour_comp != 0 || s.xy_hole_comp != 0)
+    for (auto& r : regions) r = compensate_xy(r, s.xy_contour_comp, s.xy_hole_comp);
+  const Paths64 first_region = s.elephant_foot > 0 ? offset(regions[0], -s.elephant_foot) : regions[0];
+  // сплошных слоёв сверху и снизу: не меньше числа и не тоньше толщины
+  const int top_n =
+      s.top_layers > 0 ? std::clamp(static_cast<int>(std::ceil(s.top_thickness / s.layer_height - 1e-6)), s.top_layers, 500) : 0;
+  const int bottom_n =
+      s.bottom_layers > 0
+          ? std::clamp(static_cast<int>(std::ceil((s.bottom_thickness - s.first_layer_height) / s.layer_height - 1e-6)) + 1,
+                       s.bottom_layers, 500)
+          : 0;
 
   const double w = s.line_width;
   {
@@ -664,20 +795,35 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
     std::vector<Line> part;  // кайма, поддержки и деталь
     std::vector<Area> zones; // острова детали (чуть меньше): перемещения внутри — без отката
   };
+  // ширина линий слоя по видам
+  struct Widths {
+    double outer, inner, top, solid, sparse, support, skirt;
+  };
+  auto widths_of = [&](std::size_t i) {
+    if (i == 0 && s.first_layer_width > 0) {
+      const double f = s.first_layer_width;
+      return Widths{f, f, f, f, f, f, f};
+    }
+    return Widths{s.outer_wall_width, s.inner_wall_width, s.top_width, s.solid_width, s.sparse_width, s.support_width, w};
+  };
   std::vector<LayerOut> layers(n);
   Pt pos{s.printer.bed_x / 2, s.printer.bed_y / 2};
   std::uint64_t rng = 0x9E3779B97F4A7C15ULL;
   std::vector<Pt> prev_seams, seams;
+  std::vector<std::vector<Pt>> skirt_loops;  // юбка первого слоя — и на следующих, если она выше
   const Pt rear{0.5 * (box.min[0] + box.max[0]), box.max[1]};
   for (std::size_t i = 0; i < n; ++i) {
     LayerOut& L = layers[i];
     L.z = tops[i];
     L.h = hs[i];
     const double h = hs[i];
-    const double sp = w - h * (1.0 - std::numbers::pi / 4.0);  // шаг между соседними валиками
+    const Widths W = widths_of(i);
+    const double sp_o = spacing_of(W.outer, h), sp_i = spacing_of(W.inner, h);
+    const double sp_skirt = spacing_of(W.skirt, h);
+    const Paths64& region = i == 0 ? first_region : regions[i];
     // юбка и кайма вокруг первого слоя (и его поддержек)
     if (i == 0 && !regions[0].empty()) {
-      Paths64 first = regions[0];
+      Paths64 first = region;
       if (!supports.layers.empty())
         first = Clipper2Lib::Union(first, Clipper2Lib::Union(supports.layers[0].base, supports.layers[0].interface, FillRule::NonZero),
                                    FillRule::NonZero);
@@ -687,51 +833,43 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
         if (Clipper2Lib::IsPositive(p)) outer.push_back(p);
       Paths64 footprint = outer;
       if (s.brim_width > 0) {
-        const int loops = std::max(1, static_cast<int>(std::floor((s.brim_width - w / 2) / sp)) + 1);
+        const int loops = std::max(1, static_cast<int>(std::floor((s.brim_width - W.skirt / 2) / sp_skirt)) + 1);
         // снаружи внутрь: последний виток — у детали
         for (int k = loops; k-- > 0;) {
-          const Paths64 ring = Clipper2Lib::Union(offset(outer, s.brim_gap + w / 2 + k * sp), FillRule::NonZero);
+          const Paths64 ring = Clipper2Lib::Union(offset(outer, s.brim_gap + W.skirt / 2 + k * sp_skirt), FillRule::NonZero);
           for (const auto& p : ring)
-            if (Clipper2Lib::IsPositive(p)) {
-              auto pts = to_pts(p);
-              rotate_to_nearest(pts, pos);
-              pos = pts.front();
-              L.part.push_back({Role::Brim, std::move(pts), true, {}});
-            }
+            if (Clipper2Lib::IsPositive(p)) add_loop(L.part, to_pts(p), Role::Brim, W.skirt, pos);
         }
-        footprint = offset(outer, s.brim_gap + loops * sp);
+        footprint = offset(outer, s.brim_gap + loops * sp_skirt);
       }
       if (s.skirt && s.skirt_loops > 0) {
         for (int k = s.skirt_loops; k-- > 0;) {
-          const Paths64 sk = Clipper2Lib::Union(offset(footprint, s.skirt_distance + w / 2 + k * sp), FillRule::NonZero);
-          for (const auto& p : sk)
-            if (Clipper2Lib::IsPositive(p)) {
-              auto pts = to_pts(p);
-              rotate_to_nearest(pts, pos);
-              pos = pts.front();
-              L.pre.push_back({Role::Skirt, std::move(pts), true, {}});
-            }
+          const Paths64 sk = Clipper2Lib::Union(offset(footprint, s.skirt_distance + W.skirt / 2 + k * sp_skirt), FillRule::NonZero);
+          for (const auto& p : sk) {
+            if (!Clipper2Lib::IsPositive(p) || p.size() < 3) continue;
+            add_loop(L.pre, to_pts(p), Role::Skirt, W.skirt, pos);
+            skirt_loops.push_back(L.pre.back().pts);
+          }
         }
       }
+    } else if (static_cast<int>(i) < s.skirt_layers) {
+      for (const auto& loop : skirt_loops) add_loop(L.pre, loop, Role::Skirt, W.skirt, pos);
     }
     // поддержки слоя — до детали
     if (!supports.layers.empty()) {
-      auto sl = support_lines(supports.layers[i], s, i, sp);
+      auto sl = support_lines(supports.layers[i], s, i, spacing_of(W.support, h), W.support);
       for (auto [lines, role] : {std::pair{&sl.base, Role::Support}, std::pair{&sl.interface, Role::SupportInterface}}) {
         std::vector<Polyline> open_lines;
         for (auto& fp : *lines) {
-          if (fp.closed) {
-            rotate_to_nearest(fp.pts, pos);
-            pos = fp.pts.front();
-            L.part.push_back({role, std::move(fp.pts), true, {}});
-          } else {
+          if (fp.closed)
+            add_loop(L.part, std::move(fp.pts), role, W.support, pos);
+          else
             open_lines.push_back(std::move(fp.pts));
-          }
         }
-        add_open_lines(L.part, std::move(open_lines), role, pos);
+        add_open_lines(L.part, std::move(open_lines), role, W.support, pos);
       }
     }
-    if (regions[i].empty()) continue;
+    if (region.empty()) continue;
     // что сверху и снизу: где в пределах top/bottom слоёв нет материала — сплошное заполнение
     Paths64 cover;
     bool first_cover = true;
@@ -745,17 +883,18 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
         cover = Clipper2Lib::Intersect(cover, r, FillRule::NonZero);
       }
     };
-    for (int j = 1; j <= s.top_layers; ++j) intersect_with(static_cast<std::ptrdiff_t>(i) + j);
-    for (int j = 1; j <= s.bottom_layers; ++j) intersect_with(static_cast<std::ptrdiff_t>(i) - j);
+    for (int j = 1; j <= top_n; ++j) intersect_with(static_cast<std::ptrdiff_t>(i) + j);
+    for (int j = 1; j <= bottom_n; ++j) intersect_with(static_cast<std::ptrdiff_t>(i) - j);
     if (first_cover) cover = regions[i];
     const Paths64 empty;
     const Paths64& above = i + 1 < n ? regions[i + 1] : empty;
     const Paths64& below = i > 0 ? regions[i - 1] : empty;
-    // зона над пустотой: здесь линии печатаются медленнее и с сильным обдувом
-    const Area over_zone(i > 0 ? Clipper2Lib::Difference(regions[i], offset(below, 0.1 * w), FillRule::NonZero) : Paths64{});
+    // зона над пустотой: здесь стенки печатаются медленнее и с сильным обдувом
+    const Area over_zone(i > 0 ? Clipper2Lib::Difference(region, offset(below, 0.1 * w), FillRule::NonZero) : Paths64{});
+    const Area below_area(i > 0 ? below : Paths64{});
 
     // острова по очереди: ближайший к соплу
-    auto isl = islands(regions[i]);
+    auto isl = islands(region);
     std::vector<char> done(isl.size(), 0);
     seams.clear();
     for (std::size_t m = 0; m < isl.size(); ++m) {
@@ -773,9 +912,13 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
       const int zone = static_cast<int>(L.zones.size());
       L.zones.emplace_back(offset(island, -0.25 * w));
       const std::size_t first_line = L.part.size();
+      // стенки: наружная в W.outer/2 от края, дальше шагом между соседними валиками
       std::vector<Paths64> walls;
+      double d_wall = W.outer / 2;
       for (int k = 0; k < s.wall_loops; ++k) {
-        Paths64 loop = offset(island, -(w / 2 + k * sp));
+        if (k == 1) d_wall += 0.5 * (sp_o + sp_i);
+        if (k > 1) d_wall += sp_i;
+        Paths64 loop = offset(island, -d_wall);
         if (loop.empty()) break;
         walls.push_back(std::move(loop));
       }
@@ -809,7 +952,7 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
           auto pts = to_pts(p);
           rotate_to_nearest(pts, s.seam == Seam::Nearest ? pos : seam_pt);
           pos = pts.front();
-          Line ln{k == 0 ? Role::OuterWall : Role::InnerWall, std::move(pts), true, {}};
+          Line ln{k == 0 ? Role::OuterWall : Role::InnerWall, std::move(pts), true, k == 0 ? W.outer : W.inner, 1.0, {}};
           mark_over(ln, over_zone);
           L.part.push_back(std::move(ln));
         }
@@ -820,7 +963,9 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
         for (std::size_t k = walls.size(); k-- > 0;) add_walls(k);
       // заполнение
       // сплошное — вплотную к стенке, разреженное заходит на неё (лучше держится), как в Orca
-      const double inset = w / 2 + (s.wall_loops - 1) * sp + sp / 2;
+      double d_last = W.outer / 2;
+      if (s.wall_loops > 1) d_last += 0.5 * (sp_o + sp_i) + (s.wall_loops - 2) * sp_i;
+      const double inset = d_last + 0.5 * (s.wall_loops > 1 ? sp_i : sp_o);
       Paths64 inner = offset(island, -inset);
       if (inner.empty()) {
         for (std::size_t k = first_line; k < L.part.size(); ++k) L.part[k].zone = zone;
@@ -829,46 +974,75 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
       Paths64 solid = Clipper2Lib::Difference(inner, cover, FillRule::NonZero);
       const bool full = s.infill_density >= 0.999;
       Paths64 sparse = Clipper2Lib::Intersect(
-          (!full && s.infill_overlap > 0) ? offset(island, -(inset - s.infill_overlap * w)) : inner, cover, FillRule::NonZero);
+          (!full && s.infill_overlap > 0) ? offset(island, -(inset - s.infill_overlap * W.sparse)) : inner, cover,
+          FillRule::NonZero);
       move_small_to_solid(sparse, solid, 15.0);
       if (full) {
         solid = Clipper2Lib::Union(solid, sparse, FillRule::NonZero);
         sparse.clear();
       }
       if (!solid.empty()) {
-        // верх и низ — отдельными подписями (для разбора G-code это одно и то же — сплошной материал)
-        Paths64 top = Clipper2Lib::Difference(solid, above, FillRule::NonZero);
-        Paths64 rest = Clipper2Lib::Intersect(solid, above, FillRule::NonZero);
-        Paths64 bottom = Clipper2Lib::Difference(rest, below, FillRule::NonZero);
-        Paths64 mid = Clipper2Lib::Intersect(rest, below, FillRule::NonZero);
+        // мост — над пустотой (кроме узких полосок у пологих стенок); верх — где сверху ничего,
+        // низ — на столе; подписи разные (для разбора G-code это одно — сплошной материал)
+        Paths64 bridge, top, bottom, mid;
+        if (i == 0) {
+          top = Clipper2Lib::Difference(solid, above, FillRule::NonZero);
+          bottom = Clipper2Lib::Intersect(solid, above, FillRule::NonZero);
+        } else {
+          const Paths64 free = Clipper2Lib::Difference(solid, below, FillRule::NonZero);
+          if (!free.empty())
+            bridge = Clipper2Lib::Intersect(opening(free, 0.3 * W.solid), free, FillRule::NonZero);
+          const Paths64 held = bridge.empty() ? solid : Clipper2Lib::Difference(solid, bridge, FillRule::NonZero);
+          top = Clipper2Lib::Difference(held, above, FillRule::NonZero);
+          mid = Clipper2Lib::Intersect(held, above, FillRule::NonZero);
+        }
         const double ang = (i % 2 == 0 || !s.alternate_solid) ? s.infill_angle : s.infill_angle - 90.0;
-        for (auto [area, role] : {std::pair{&bottom, Role::Bottom}, std::pair{&mid, Role::Solid}, std::pair{&top, Role::Top}}) {
+        // мосты: каждый кусок — в своём направлении, чтобы линии опирались обоими концами
+        for (const auto& piece : islands(bridge)) {
+          const double spc = spacing_of(W.solid, h);
+          const double bang = bridge_angle(piece, below_area, spc, ang);
           const std::size_t from = L.part.size();
-          add_open_lines(L.part, hatch(*area, sp, ang, 0.0, w), role, pos);
-          if (role != Role::Solid)
-            for (std::size_t k = from; k < L.part.size(); ++k) mark_over(L.part[k], over_zone);
+          add_open_lines(L.part, join_zigzag(hatch(piece, spc, bang, 0.0, W.solid), piece, 3 * spc, spc / 2), Role::Bridge,
+                         W.solid, pos);
+          for (std::size_t k = from; k < L.part.size(); ++k) {
+            L.part[k].flow = s.bridge_flow;
+            L.part[k].over.assign(L.part[k].pts.size(), 1);
+          }
+        }
+        fill_surface(L.part, bottom, s.bottom_pattern, ang, Role::Bottom, i == 0 ? W.solid : W.solid, h, pos);
+        fill_surface(L.part, mid, s.solid_pattern, ang, Role::Solid, W.solid, h, pos);
+        fill_surface(L.part, top, s.top_pattern, ang, Role::Top, W.top, h, pos);
+        // глажка верха: тот же слой ещё раз с малым потоком (только самый верх — последний слой детали)
+        if (s.ironing != Ironing::None && !top.empty() && s.ironing_flow > 0 &&
+            (s.ironing == Ironing::Top || i + 1 == n)) {
+          const Paths64 iron = opening(offset(top, -0.5 * W.top), 0.2);
+          if (!iron.empty()) {
+            const double is = s.ironing_spacing;
+            const std::size_t from = L.part.size();
+            add_open_lines(L.part, join_zigzag(hatch(iron, is, ang + 45.0, 0.0, W.top), iron, 3 * is, is / 2), Role::Ironing,
+                           W.top, pos);
+            const double flow = s.ironing_flow * is * h / bead_area(W.top, h);
+            for (std::size_t k = from; k < L.part.size(); ++k) L.part[k].flow = flow;
+          }
         }
       }
       if (!sparse.empty() && s.infill_density > 0) {
         InfillParams ip;
         ip.pattern = s.pattern;
         ip.density = s.infill_density;
-        ip.spacing = sp;
-        ip.line_width = w;
+        ip.spacing = spacing_of(W.sparse, h);
+        ip.line_width = W.sparse;
         ip.angle = s.infill_angle;
         ip.layer = i;
         ip.z = mids[i];
         std::vector<Polyline> open_lines;
         for (auto& fp : sparse_infill(sparse, ip)) {
-          if (fp.closed) {
-            rotate_to_nearest(fp.pts, pos);
-            pos = fp.pts.front();
-            L.part.push_back({Role::Sparse, std::move(fp.pts), true, {}});
-          } else {
+          if (fp.closed)
+            add_loop(L.part, std::move(fp.pts), Role::Sparse, W.sparse, pos);
+          else
             open_lines.push_back(std::move(fp.pts));
-          }
         }
-        add_open_lines(L.part, std::move(open_lines), Role::Sparse, pos);
+        add_open_lines(L.part, std::move(open_lines), Role::Sparse, W.sparse, pos);
       }
       for (std::size_t k = first_line; k < L.part.size(); ++k) L.part[k].zone = zone;
     }
@@ -888,24 +1062,38 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
   mo.z_hop = pr.z_hop;
   mo.min_travel = pr.retract_min_travel;
   mo.speed_z = std::max(1.0, pr.max_speed_z);
-  // скорость роли с пределами принтера, пластика и расхода сопла
-  auto role_speed = [&](Role r, std::size_t layer, double h) {
+  auto line_len = [](const Line& ln) {
+    double l = 0;
+    for (std::size_t k = 1; k < ln.pts.size(); ++k) l += std::sqrt(dist2(ln.pts[k - 1], ln.pts[k]));
+    if (ln.closed && ln.pts.size() > 2) l += std::sqrt(dist2(ln.pts.back(), ln.pts.front()));
+    return l;
+  };
+  const double small_loop = 2 * std::numbers::pi * std::max(0.0, s.small_perimeter_threshold);
+  // скорость линии с пределами принтера, пластика и расхода сопла
+  auto line_speed = [&](const Line& ln, std::size_t layer, double h) {
     double v = 0;
-    switch (r) {
+    bool infill = false;
+    switch (ln.role) {
       case Role::OuterWall: v = s.speed_outer_wall; break;
       case Role::InnerWall: v = s.speed_inner_wall; break;
       case Role::Solid:
-      case Role::Bottom: v = s.speed_solid; break;
-      case Role::Top: v = s.speed_top; break;
-      case Role::Sparse: v = s.speed_sparse; break;
+      case Role::Bottom: v = s.speed_solid, infill = true; break;
+      case Role::Top: v = s.speed_top, infill = true; break;
+      case Role::Bridge: v = s.speed_bridge, infill = true; break;
+      case Role::Sparse: v = s.speed_sparse, infill = true; break;
+      case Role::Ironing: v = s.speed_ironing; break;
       case Role::Skirt:
       case Role::Brim: v = s.speed_first_layer; break;
       case Role::Support: v = s.speed_support; break;
       case Role::SupportInterface: v = s.speed_support_interface; break;
     }
-    if (layer == 0) v = std::min(v, s.speed_first_layer);
+    // мелкие периметры (обычно отверстия) — медленнее
+    if ((ln.role == Role::OuterWall || ln.role == Role::InnerWall) && ln.closed && small_loop > 0 &&
+        line_len(ln) <= small_loop)
+      v = std::min(v, s.small_perimeter_speed * s.speed_outer_wall);
+    if (layer == 0) v = std::min(v, infill ? s.speed_first_layer_infill : s.speed_first_layer);
     v = std::min({v, pr.max_speed, fl.max_speed});
-    const double area = (w - h) * h + std::numbers::pi * 0.25 * h * h;
+    const double area = bead_area(ln.width, h) * ln.flow;
     if (fl.max_volumetric > 0) v = std::min(v, fl.max_volumetric / std::max(area, 1e-6));
     return std::max(v, 1.0);
   };
@@ -914,18 +1102,13 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
     switch (r) {
       case Role::OuterWall: return clamp_accel(s.accel_outer_wall);
       case Role::InnerWall: return clamp_accel(s.accel_inner_wall);
-      case Role::Top: return clamp_accel(s.accel_top);
+      case Role::Top:
+      case Role::Ironing: return clamp_accel(s.accel_top);
       case Role::Sparse: return clamp_accel(s.accel_sparse);
       case Role::Skirt:
       case Role::Brim: return clamp_accel(s.accel_first_layer);
       default: return clamp_accel(s.accel_default);
     }
-  };
-  auto line_len = [](const Line& ln) {
-    double l = 0;
-    for (std::size_t k = 1; k < ln.pts.size(); ++k) l += std::sqrt(dist2(ln.pts[k - 1], ln.pts[k]));
-    if (ln.closed && ln.pts.size() > 2) l += std::sqrt(dist2(ln.pts.back(), ln.pts.front()));
-    return l;
   };
 
   // ------------------------------------------------------------- G-code
@@ -1003,7 +1186,7 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
       for (const auto& ln : *list) {
         if (ln.pts.empty()) continue;
         if (at[0] > -1e8) t_layer += std::sqrt(dist2(at, ln.pts.front())) / mo.travel;
-        t_layer += line_len(ln) / role_speed(ln.role, i, L.h);
+        t_layer += line_len(ln) / line_speed(ln, i, L.h);
         at = ln.closed ? ln.pts.front() : ln.pts.back();
       }
     double slow = 1.0;
@@ -1060,11 +1243,11 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
         g.line(std::string(";TYPE:") + role_label(ln.role));
         cur = ln.role;
       }
-      double v = role_speed(ln.role, i, L.h);
+      double v = line_speed(ln, i, L.h);
       if (slow < 1.0) v = std::max(v * slow, std::min(v, fl.slowdown_speed));
-      const double over_v = std::min(v, s.speed_overhang);
-      const bool quiet = !ln.pts.empty() && inside_zone(ln.zone, g.pos(), ln.pts.front());
-      g.extrude(ln, w, L.h, v, over_v, over_fan, role_accel(ln.role, i),
+      const double over_v = ln.role == Role::Bridge ? v : std::min(v, s.speed_overhang);
+      const bool quiet = s.reduce_retraction && !ln.pts.empty() && inside_zone(ln.zone, g.pos(), ln.pts.front());
+      g.extrude(ln, L.h, v, over_v, over_fan, role_accel(ln.role, i),
                 ln.role == Role::Support || ln.role == Role::SupportInterface, quiet);
       last_zone = ln.zone;
     };
@@ -1111,9 +1294,27 @@ Result slice(const TriangleMesh& mesh, const Settings& in, const Progress& progr
   g.line(std::format("; filament_settings_id = \"{}\"", fl.name));
   g.line(std::format("; filament_density = {:g}", fl.density));
   g.line(std::format("; line_width = {:g}", s.line_width));
+  g.line(std::format("; initial_layer_line_width = {:g}", s.first_layer_width > 0 ? s.first_layer_width : s.line_width));
+  g.line(std::format("; outer_wall_line_width = {:g}", s.outer_wall_width));
+  g.line(std::format("; inner_wall_line_width = {:g}", s.inner_wall_width));
+  g.line(std::format("; top_surface_line_width = {:g}", s.top_width));
+  g.line(std::format("; internal_solid_infill_line_width = {:g}", s.solid_width));
+  g.line(std::format("; sparse_infill_line_width = {:g}", s.sparse_width));
   g.line(std::format("; wall_loops = {}", s.wall_loops));
-  g.line(std::format("; top_shell_layers = {}", s.top_layers));
-  g.line(std::format("; bottom_shell_layers = {}", s.bottom_layers));
+  g.line(std::format("; top_shell_layers = {}", top_n));
+  g.line(std::format("; top_shell_thickness = {:g}", s.top_thickness));
+  g.line(std::format("; bottom_shell_layers = {}", bottom_n));
+  g.line(std::format("; bottom_shell_thickness = {:g}", s.bottom_thickness));
+  g.line(std::format("; top_surface_pattern = {}", surface_key(s.top_pattern)));
+  g.line(std::format("; bottom_surface_pattern = {}", surface_key(s.bottom_pattern)));
+  g.line(std::format("; internal_solid_infill_pattern = {}", surface_key(s.solid_pattern)));
+  g.line(std::format("; ironing_type = {}", s.ironing == Ironing::None ? "no ironing"
+                                            : s.ironing == Ironing::Top ? "top"
+                                                                        : "topmost"));
+  g.line(std::format("; elefant_foot_compensation = {:g}", s.elephant_foot));
+  g.line(std::format("; xy_hole_compensation = {:g}", s.xy_hole_comp));
+  g.line(std::format("; xy_contour_compensation = {:g}", s.xy_contour_comp));
+  g.line(std::format("; bridge_flow = {:g}", s.bridge_flow));
   g.line(std::format("; sparse_infill_density = {:g}%", s.infill_density * 100));
   g.line(std::format("; sparse_infill_pattern = {}", pattern_key(s.pattern)));
   g.line(std::format("; enable_support = {}", s.support == Support::None ? 0 : 1));

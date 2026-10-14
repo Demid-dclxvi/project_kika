@@ -292,6 +292,81 @@ std::string_view support_name(Support s) {
   return "Без поддержек";
 }
 
+namespace {
+
+struct SurfaceInfo {
+  SurfacePattern p;
+  const char* key;
+  const char* name;
+};
+constexpr SurfaceInfo kSurfaces[] = {
+    {SurfacePattern::Monotonic, "monotonic", "Монотонный"},
+    {SurfacePattern::MonotonicLine, "monotonicline", "Монотонный без соединений"},
+    {SurfacePattern::Rectilinear, "rectilinear", "Прямолинейный (зигзаг)"},
+    {SurfacePattern::Concentric, "concentric", "Концентрический"},
+};
+
+std::string lower_key(std::string_view key) {
+  std::string k;
+  for (char c : key) k.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  return k;
+}
+
+}  // namespace
+
+std::string_view surface_key(SurfacePattern p) {
+  for (const auto& x : kSurfaces)
+    if (x.p == p) return x.key;
+  return "monotonic";
+}
+
+std::string_view surface_name(SurfacePattern p) {
+  for (const auto& x : kSurfaces)
+    if (x.p == p) return x.name;
+  return "Монотонный";
+}
+
+std::optional<SurfacePattern> surface_from_key(std::string_view key) {
+  const std::string k = lower_key(key);
+  for (const auto& x : kSurfaces)
+    if (k == x.key) return x.p;
+  if (k == "monotonic_line" || k == "monotonic line") return SurfacePattern::MonotonicLine;
+  if (k == "zig-zag" || k == "zigzag" || k == "alignedrectilinear") return SurfacePattern::Rectilinear;
+  return std::nullopt;
+}
+
+const std::vector<SurfacePattern>& surface_patterns() {
+  static const std::vector<SurfacePattern> list{SurfacePattern::Monotonic, SurfacePattern::MonotonicLine,
+                                                SurfacePattern::Rectilinear, SurfacePattern::Concentric};
+  return list;
+}
+
+std::string_view ironing_key(Ironing i) {
+  switch (i) {
+    case Ironing::None: return "none";
+    case Ironing::Top: return "top";
+    case Ironing::Topmost: return "topmost";
+  }
+  return "none";
+}
+
+std::string_view ironing_name(Ironing i) {
+  switch (i) {
+    case Ironing::None: return "Без глажки";
+    case Ironing::Top: return "Все верхние поверхности";
+    case Ironing::Topmost: return "Только самый верх";
+  }
+  return "Без глажки";
+}
+
+std::optional<Ironing> ironing_from_key(std::string_view key) {
+  const std::string k = lower_key(key);
+  if (k == "none" || k == "no" || k == "no ironing" || k.empty()) return Ironing::None;
+  if (k == "top" || k == "top surfaces") return Ironing::Top;
+  if (k == "topmost" || k == "topmost surface") return Ironing::Topmost;
+  return std::nullopt;
+}
+
 std::string_view seam_key(Seam s) {
   switch (s) {
     case Seam::Aligned: return "aligned";

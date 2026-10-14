@@ -28,10 +28,10 @@ struct SupportPlan {
 SupportPlan plan_supports(const std::vector<Paths64>& regions, const std::vector<double>& mids,
                           const std::vector<double>& heights, const Settings& s);
 
-// Линии поддержек одного слоя.
+// Линии поддержек одного слоя: ширина линии width, шаг сплошных линий spacing.
 struct SupportLines {
   std::vector<FillPath> base, interface;
 };
-SupportLines support_lines(const SupportLayer& L, const Settings& s, std::size_t layer, double spacing);
+SupportLines support_lines(const SupportLayer& L, const Settings& s, std::size_t layer, double spacing, double width);
 
 }  // namespace kika::slicer::detail

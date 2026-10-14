@@ -44,6 +44,35 @@ std::vector<Paths64> islands(const Paths64& region);
 // по нормали к линиям. Линии привязаны к началу координат: на соседних слоях — друг над другом.
 std::vector<Polyline> hatch(const Paths64& area, double spacing, double angle, double phase, double min_len);
 
+// Куски штриховки по рядам: k — номер ряда, s0 < s1 — положение концов вдоль линий.
+struct HatchPiece {
+  long long k = 0;
+  double s0 = 0, s1 = 0;
+  Polyline pts;  // от s0 к s1
+};
+std::vector<HatchPiece> hatch_rows(const Paths64& area, double spacing, double angle, double phase, double min_len);
+
+// Монотонные участки штриховки: в каждом — по одному куску на ряд, ряды подряд, соседние куски
+// перекрываются вдоль линий. Печать участка ряд за рядом не оставляет «швов» между полосами
+// разного времени (как монотонное заполнение верха в PrusaSlicer/Orca). Направление кусков
+// внутри участка чередуется.
+std::vector<std::vector<Polyline>> monotonic_runs(std::vector<HatchPiece> pieces);
+
+// Точка внутри области (чёт-нечет по всем контурам).
+bool contains(const Paths64& area, const Pt& p);
+
+// Соседние линии — в зигзаг, если перемычка между концами короче max_gap и лежит в области.
+// trim — на столько укоротить линии у перемычки (обычно полшага): пластика у края столько же,
+// сколько без перемычек.
+std::vector<Polyline> join_zigzag(std::vector<Polyline> lines, const Paths64& area, double max_gap, double trim = 0);
+
+// Концентрические петли внутри области: первая — в spacing/2 от края, дальше через spacing.
+// Петли площадью меньше min_area_mm2 отбрасываются.
+std::vector<Polyline> concentric_loops(const Paths64& area, double spacing, double min_area_mm2);
+
+// Поправка размеров слоя: наружные контуры шире на contour, отверстия шире на hole (мм, минус — уже).
+Paths64 compensate_xy(const Paths64& region, double contour, double hole);
+
 // Обрезать открытые ломаные областью; куски короче min_len отбрасываются.
 std::vector<Polyline> clip_open(const Paths64& area, const std::vector<Polyline>& lines, double min_len);
 

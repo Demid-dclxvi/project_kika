@@ -75,7 +75,7 @@ PrintJob print_from_json(const Value* print, const std::string& material) {
   } else {
     s.filament = filament_preset(filament);
   }
-  section_from_json(s, Section::Process, o, "print", {"printer", "filament", "rotate"});
+  section_from_json(s, Section::Process, o, "print", {"printer", "filament", "rotate", "scale", "position"});
   // первый слой не указан — как остальные
   if (o.find("layer_height") && !o.find("first_layer_height")) s.first_layer_height = s.layer_height;
   if (const Value* r = o.find("rotate"); r && !r->is_null()) {
@@ -84,6 +84,26 @@ PrintJob print_from_json(const Value* print, const std::string& material) {
       if (!r->at(a).is_number()) throw JobError("print.rotate: ожидаются числа");
       p.rotate[a] = r->at(a).as_double();
     }
+  }
+  if (const Value* sc = o.find("scale"); sc && !sc->is_null()) {
+    auto check = [](const Value& v) {
+      if (!v.is_number()) throw JobError("print.scale: ожидается число или [x, y, z]");
+      const double k = v.as_double();
+      if (!(k >= 0.01 && k <= 100)) throw JobError("print.scale: масштаб " + json::dump(v) + " вне допустимого (0,01…100)");
+      return k;
+    };
+    if (sc->is_array()) {
+      if (sc->size() != 3) throw JobError("print.scale: ожидается число или [x, y, z]");
+      for (std::size_t a = 0; a < 3; ++a) p.scale[a] = check(sc->at(a));
+    } else {
+      const double k = check(*sc);
+      p.scale = {k, k, k};
+    }
+  }
+  if (const Value* pos = o.find("position"); pos && !pos->is_null()) {
+    if (!pos->is_array() || pos->size() != 2 || !pos->at(0).is_number() || !pos->at(1).is_number())
+      throw JobError("print.position: ожидается [x, y] — центр детали на столе, мм");
+    p.position = std::array<double, 2>{pos->at(0).as_double(), pos->at(1).as_double()};
   }
   return p;
 }
@@ -129,6 +149,13 @@ Value print_to_json(const PrintJob& p) {
     if (always || json::dump(v) != json::dump(f.get(defaults))) o[f.key] = v;
   }
   if (p.rotate != std::array<double, 3>{0, 0, 0}) o["rotate"] = Value::array_of(p.rotate);
+  if (p.scale != std::array<double, 3>{1, 1, 1}) {
+    if (p.scale[0] == p.scale[1] && p.scale[1] == p.scale[2])
+      o["scale"] = p.scale[0];
+    else
+      o["scale"] = Value::array_of(p.scale);
+  }
+  if (p.position) o["position"] = Value::array_of(*p.position);
   return o;
 }
 
@@ -168,12 +195,35 @@ std::array<double, 3> euler_xyz(const geometry::Transform& t) {
   return {deg(a), deg(b), deg(c)};
 }
 
+geometry::Transform linear_of(const PrintJob& p) {
+  geometry::Transform l = rotation_of(p.rotate);
+  for (std::size_t row = 0; row < 3; ++row)
+    for (std::size_t c = 0; c < 3; ++c) l.r[row * 3 + c] *= p.scale[row];
+  return l;
+}
+
+geometry::Transform change_between(const PrintJob& from, const PrintJob& to) {
+  // L(from)⁻¹ = R(from)ᵀ·S(from)⁻¹
+  geometry::Transform inv = rotation_of(from.rotate);
+  std::swap(inv.r[1], inv.r[3]);
+  std::swap(inv.r[2], inv.r[6]);
+  std::swap(inv.r[5], inv.r[7]);
+  for (std::size_t row = 0; row < 3; ++row)
+    for (std::size_t c = 0; c < 3; ++c) inv.r[row * 3 + c] /= from.scale[c];
+  return linear_of(to) * inv;
+}
+
+std::array<double, 2> bed_position(const PrintJob& p) {
+  if (p.position) return *p.position;
+  return {p.settings.printer.bed_x / 2, p.settings.printer.bed_y / 2};
+}
+
 geometry::Transform placement(const geometry::TriangleMesh& mesh, const PrintJob& p) {
-  using geometry::Transform;
-  const Transform r = rotation_of(p.rotate);
+  const geometry::Transform l = linear_of(p);
   geometry::TriangleMesh tmp = mesh;
-  tmp.transform(r);
-  return geometry::place_on_bed(tmp, p.settings.printer.bed_x / 2, p.settings.printer.bed_y / 2) * r;
+  tmp.transform(l);
+  const auto at = bed_position(p);
+  return geometry::place_on_bed(tmp, at[0], at[1]) * l;
 }
 
 geometry::TriangleMesh placed(const geometry::TriangleMesh& mesh, const PrintJob& p) {

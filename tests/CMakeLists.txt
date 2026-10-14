@@ -17,6 +17,7 @@ add_executable(kika_tests
   report/test_report.cpp
   slicer/test_slicer.cpp
   slicer/test_printer_gcode.cpp
+  slicer/test_slicer_settings.cpp
   util/test_json.cpp
   voxel/test_voxel.cpp
 )

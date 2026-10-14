@@ -103,4 +103,10 @@ void remap_faces(UiJob& job, const Scene& from, const Scene& to);
 // Точно — для поворотов, кратных 90°; грани, чья нормаль после поворота не по оси, теряются.
 void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& r);
 
+// То же для поворота с масштабом: linear переводит точки детали (масштаб × поворот, по строкам),
+// turn — только поворот, им поворачиваются направления нагрузок и оси. Точно — если linear
+// переводит оси в оси (поворот кратен 90°, масштаб по осям).
+void transform_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& linear,
+                   const std::array<double, 9>& turn);
+
 }  // namespace kika::app

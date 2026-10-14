@@ -119,6 +119,24 @@ std::string_view support_key(Support s);  // none, normal, tree
 std::optional<Support> support_from_key(std::string_view key);
 std::string_view support_name(Support s);
 
+// Рисунок сплошных слоёв: верх, низ, сплошное заполнение внутри.
+enum class SurfacePattern {
+  Monotonic,      // параллельные линии ряд за рядом, соседние соединены у края — ровная поверхность
+  MonotonicLine,  // то же без соединений: у края нет перемычек
+  Rectilinear,    // прямолинейный: зигзаг в любом порядке — меньше перемещений
+  Concentric,     // петли, повторяющие контур
+};
+std::string_view surface_key(SurfacePattern p);  // monotonic, monotonicline, rectilinear, concentric
+std::optional<SurfacePattern> surface_from_key(std::string_view key);
+std::string_view surface_name(SurfacePattern p);
+const std::vector<SurfacePattern>& surface_patterns();
+
+// Глажка верха: сопло проходит по верхней поверхности ещё раз с малым потоком.
+enum class Ironing { None, Top, Topmost };  // нет; все верхние поверхности; только последний слой детали
+std::string_view ironing_key(Ironing i);    // none, top, topmost
+std::optional<Ironing> ironing_from_key(std::string_view key);
+std::string_view ironing_name(Ironing i);
+
 // Шов: где начинается замкнутая стенка.
 enum class Seam {
   Aligned,  // друг над другом, по возможности в углу
@@ -136,11 +154,27 @@ struct Settings {
   double layer_height = 0.2;
   double first_layer_height = 0.2;
   double line_width = 0.42;
+  // ширина линий по видам, мм (0 — как line_width)
+  double first_layer_width = 0, outer_wall_width = 0, inner_wall_width = 0, top_width = 0, sparse_width = 0,
+         solid_width = 0, support_width = 0;
   int wall_loops = 2;
   bool outer_wall_first = false;  // сначала наружная стенка (точнее размеры), иначе изнутри наружу
   Seam seam = Seam::Aligned;
   int top_layers = 5;
   int bottom_layers = 3;
+  double top_thickness = 0, bottom_thickness = 0;  // мм: сплошных слоёв не меньше этой толщины (0 — только по числу)
+  SurfacePattern top_pattern = SurfacePattern::MonotonicLine, bottom_pattern = SurfacePattern::Monotonic;
+  SurfacePattern solid_pattern = SurfacePattern::Rectilinear;  // сплошное заполнение внутри
+  // глажка
+  Ironing ironing = Ironing::None;
+  double ironing_flow = 0.1;      // доля обычного потока
+  double ironing_spacing = 0.15;  // мм
+  // точность
+  double elephant_foot = 0;       // первый слой уже на столько, мм (против «слоновьей ноги»)
+  double xy_hole_comp = 0;        // отверстия шире на столько, мм
+  double xy_contour_comp = 0;     // наружный контур шире на столько, мм
+  // мосты
+  double bridge_flow = 1.0;       // поток на мостах (над пустотой), доля
   double infill_density = 0.15;  // 0…1
   Pattern pattern = Pattern::Grid;
   double infill_angle = 45;      // градусы
@@ -149,12 +183,17 @@ struct Settings {
   bool skirt = true;
   int skirt_loops = 1;
   double skirt_distance = 3;     // мм
+  int skirt_layers = 1;          // высота юбки, слоёв
   double brim_width = 0;         // кайма вокруг первого слоя, мм (0 — нет)
   double brim_gap = 0.1;         // зазор между каймой и деталью, мм
   // скорости, мм/с (прижимаются к пределам принтера и пластика)
   double speed_outer_wall = 200, speed_inner_wall = 300, speed_solid = 250, speed_top = 200, speed_sparse = 270;
-  double speed_first_layer = 50, speed_travel = 500;
-  double speed_overhang = 30;    // нависающие стенки и мосты
+  double speed_first_layer = 50, speed_first_layer_infill = 50, speed_travel = 500;
+  double speed_overhang = 30;    // нависающие стенки
+  double speed_bridge = 50;      // мосты: сплошные слои над пустотой
+  double speed_ironing = 30;
+  double small_perimeter_speed = 0.5;      // мелкие периметры: доля скорости наружной стенки
+  double small_perimeter_threshold = 6.5;  // мелкий — если периметр короче окружности такого радиуса, мм
   // ускорения, мм/с² (0 — как печать по умолчанию)
   double accel_default = 10000, accel_outer_wall = 5000, accel_inner_wall = 0, accel_top = 2000,
          accel_sparse = 0, accel_first_layer = 500, accel_travel = 10000;
@@ -170,6 +209,7 @@ struct Settings {
   double speed_support = 150, speed_support_interface = 80;  // мм/с
   // служебное
   bool label_objects = true;     // Klipper: EXCLUDE_OBJECT — отмена детали, карта стола только под ней
+  bool reduce_retraction = true; // без отката, если перемещение целиком внутри детали
   std::string generated_at;      // «2026-10-12 at 23:00:00» для шапки (Moonraker узнаёт по ней сведения о печати)
 };
 

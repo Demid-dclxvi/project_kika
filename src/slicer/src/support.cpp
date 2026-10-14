@@ -40,14 +40,6 @@ Paths64 tidy(const Paths64& p) {
   return Clipper2Lib::SimplifyPaths(p, 0.005 * kScale, true);
 }
 
-bool inside(const Paths64& area, const Pt& p) {
-  const Point64 pt(q(p[0]), q(p[1]));
-  int n = 0;
-  for (const auto& path : area)
-    if (Clipper2Lib::PointInPolygon(pt, path) != Clipper2Lib::PointInPolygonResult::IsOutside) ++n;
-  return n % 2 == 1;
-}
-
 // Ближайшая точка границы области.
 Pt nearest_boundary(const Paths64& area, const Pt& p, double& dist) {
   Pt best = p;
@@ -79,23 +71,6 @@ Path64 circle(const Pt& c, double r) {
     p.push_back(Point64(q(c[0] + r * std::cos(a)), q(c[1] + r * std::sin(a))));
   }
   return p;
-}
-
-// Соседние линии штриховки — в зигзаг, если перемычка между ними лежит в области.
-std::vector<Polyline> zigzag(std::vector<Polyline> lines, const Paths64& area, double max_gap) {
-  std::vector<Polyline> out;
-  for (auto& l : lines) {
-    if (!out.empty()) {
-      Polyline& prev = out.back();
-      const Pt a = prev.back(), b = l.front();
-      if (dist2(a, b) <= max_gap * max_gap && inside(area, {(a[0] + b[0]) / 2, (a[1] + b[1]) / 2})) {
-        prev.insert(prev.end(), l.begin(), l.end());
-        continue;
-      }
-    }
-    out.push_back(std::move(l));
-  }
-  return out;
 }
 
 // Общие данные для обоих видов поддержек.
@@ -212,7 +187,7 @@ void plan_tree(const Context& c, const std::vector<Paths64>& O, const std::vecto
       Node nd = nodes[a];
       nd.p = target[a];
       const Paths64& col = collision(j, nd.r);
-      if (inside(col, nd.p)) {
+      if (contains(col, nd.p)) {
         double d = 0;
         const Pt e = nearest_boundary(col, nd.p, d);
         if (d <= 3 * move) {
@@ -234,7 +209,7 @@ void plan_tree(const Context& c, const std::vector<Paths64>& O, const std::vecto
         std::vector<Pt> cand;
         for (double x = std::ceil(f.umin / tip_step) * tip_step; x <= f.umax; x += tip_step)
           for (double y = std::ceil(f.vmin / tip_step) * tip_step; y <= f.vmax; y += tip_step)
-            if (inside(isl, {x, y})) cand.push_back({x, y});
+            if (contains(isl, {x, y})) cand.push_back({x, y});
         if (cand.empty()) {  // узкий кусок: точка внутри него
           const Paths64 core = offset(isl, -0.05);
           const Paths64& src = core.empty() ? isl : core;
@@ -243,7 +218,7 @@ void plan_tree(const Context& c, const std::vector<Paths64>& O, const std::vecto
         for (const Pt& p : cand) {
           bool near = false;
           for (const auto& nd : nodes) near = near || dist2(nd.p, p) < (0.5 * tip_step) * (0.5 * tip_step);
-          if (near || inside(collision(j, tip_r), p)) continue;
+          if (near || contains(collision(j, tip_r), p)) continue;
           nodes.push_back({p, tip_r, new_id({})});
         }
       }
@@ -358,13 +333,13 @@ SupportPlan plan_supports(const std::vector<Paths64>& regions, const std::vector
   return plan;
 }
 
-SupportLines support_lines(const SupportLayer& L, const Settings& s, std::size_t layer, double spacing) {
+SupportLines support_lines(const SupportLayer& L, const Settings& s, std::size_t layer, double spacing, double width) {
   SupportLines out;
-  const double w = s.line_width;
+  const double w = width;
   if (!L.interface.empty()) {
     const Paths64 a = opening(L.interface, 0.45 * w);
     const double step = std::max(s.support_interface_spacing, spacing);
-    for (auto& l : zigzag(hatch(a, step, layer % 2 == 0 ? 0.0 : 90.0, 0, w), a, 2 * step))
+    for (auto& l : join_zigzag(hatch(a, step, layer % 2 == 0 ? 0.0 : 90.0, 0, w), a, 2 * step))
       out.interface.push_back({std::move(l), false});
   }
   if (!L.base.empty()) {
@@ -376,11 +351,11 @@ SupportLines support_lines(const SupportLayer& L, const Settings& s, std::size_t
           if (p.size() >= 3) out.base.push_back({to_pts(p), true});
         const Paths64 core = offset(isl, -w);
         if (area_mm2(core) > 4 * s.support_spacing * s.support_spacing)
-          for (auto& l : zigzag(hatch(core, s.support_spacing, 0, 0, w), core, 1.5 * s.support_spacing))
+          for (auto& l : join_zigzag(hatch(core, s.support_spacing, 0, 0, w), core, 1.5 * s.support_spacing))
             out.base.push_back({std::move(l), false});
       }
     } else {
-      for (auto& l : zigzag(hatch(a, s.support_spacing, 0, 0, w), a, 1.5 * s.support_spacing))
+      for (auto& l : join_zigzag(hatch(a, s.support_spacing, 0, 0, w), a, 1.5 * s.support_spacing))
         out.base.push_back({std::move(l), false});
     }
   }

@@ -487,12 +487,41 @@ void remap_faces(UiJob& job, const Scene& from, const Scene& to) {
 }
 
 void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& r) {
-  auto mul = [&](const Vec3& v) {
-    return Vec3{r[0] * v[0] + r[1] * v[1] + r[2] * v[2], r[3] * v[0] + r[4] * v[1] + r[5] * v[2],
-                r[6] * v[0] + r[7] * v[1] + r[8] * v[2]};
+  transform_job(job, from, to, r, r);
+}
+
+void transform_job(UiJob& job, const Scene& from, const Scene& to, const std::array<double, 9>& linear,
+                   const std::array<double, 9>& r) {
+  using M3 = std::array<double, 9>;
+  auto apply = [](const M3& m, const Vec3& v) {
+    return Vec3{m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+                m[6] * v[0] + m[7] * v[1] + m[8] * v[2]};
   };
-  // ось и знак, куда переходит ось a; пусто — поворот не кратен 90°
-  auto axis_of = [](const Vec3& v) -> std::optional<std::pair<int, double>> {
+  auto transpose = [](const M3& m) { return M3{m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]}; };
+  // обратная матрица через присоединённую
+  auto inverse = [](const M3& m) {
+    const double c0 = m[4] * m[8] - m[5] * m[7], c1 = m[5] * m[6] - m[3] * m[8], c2 = m[3] * m[7] - m[4] * m[6];
+    const double det = m[0] * c0 + m[1] * c1 + m[2] * c2;
+    const double k = std::abs(det) > 1e-300 ? 1.0 / det : 0.0;
+    return M3{c0 * k,
+              (m[2] * m[7] - m[1] * m[8]) * k,
+              (m[1] * m[5] - m[2] * m[4]) * k,
+              c1 * k,
+              (m[0] * m[8] - m[2] * m[6]) * k,
+              (m[2] * m[3] - m[0] * m[5]) * k,
+              c2 * k,
+              (m[1] * m[6] - m[0] * m[7]) * k,
+              (m[0] * m[4] - m[1] * m[3]) * k};
+  };
+  const M3 inv = inverse(linear);
+  const M3 normal_fwd = transpose(inv);     // нормали: (L⁻¹)ᵀ
+  const M3 normal_back = transpose(linear);  // обратно: Lᵀ
+  auto mul = [&](const Vec3& v) { return apply(r, v); };
+  // ось и знак, куда переходит направление v (после нормировки); пусто — не по оси
+  auto axis_of = [](Vec3 v) -> std::optional<std::pair<int, double>> {
+    const double l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (l < 1e-12) return std::nullopt;
+    for (auto& x : v) x /= l;
     for (int a = 0; a < 3; ++a)
       if (std::abs(v[static_cast<std::size_t>(a)]) > 0.999) return std::pair{a, v[static_cast<std::size_t>(a)] > 0 ? 1.0 : -1.0};
     return std::nullopt;
@@ -507,17 +536,13 @@ void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array
   const Vec3 s = from.size();
   Vec3 lo{1e300, 1e300, 1e300};
   for (int c = 0; c < 8; ++c) {
-    const Vec3 q = mul({(c & 1) ? s[0] : 0.0, (c & 2) ? s[1] : 0.0, (c & 4) ? s[2] : 0.0});
+    const Vec3 q = apply(linear, {(c & 1) ? s[0] : 0.0, (c & 2) ? s[1] : 0.0, (c & 4) ? s[2] : 0.0});
     for (std::size_t a = 0; a < 3; ++a) lo[a] = std::min(lo[a], q[a]);
   }
-  const auto mul_t = [&](const Vec3& v) {  // обратный поворот — транспонированный
-    return Vec3{r[0] * v[0] + r[3] * v[1] + r[6] * v[2], r[1] * v[0] + r[4] * v[1] + r[7] * v[2],
-                r[2] * v[0] + r[5] * v[1] + r[8] * v[2]};
-  };
   const auto dir_of = [&](int dir, bool back) -> std::optional<int> {
     Vec3 n{0, 0, 0};
     n[static_cast<std::size_t>(dir >> 1)] = (dir & 1) ? 1.0 : -1.0;
-    const auto ax = axis_of(back ? mul_t(n) : mul(n));
+    const auto ax = axis_of(apply(back ? normal_back : normal_fwd, n));
     if (!ax) return std::nullopt;
     return ax->first * 2 + (ax->second > 0 ? 1 : 0);
   };
@@ -526,13 +551,13 @@ void rotate_job(UiJob& job, const Scene& from, const Scene& to, const std::array
       [&](const FacePoint& fp) -> std::optional<FacePoint> {
         const auto d = dir_of(fp.dir, false);
         if (!d) return std::nullopt;
-        const Vec3 q = mul(fp.p);
+        const Vec3 q = apply(linear, fp.p);
         return FacePoint{{q[0] - lo[0], q[1] - lo[1], q[2] - lo[2]}, *d};
       },
       [&](const FacePoint& fp) -> std::optional<FacePoint> {
         const auto d = dir_of(fp.dir, true);
         if (!d) return std::nullopt;
-        return FacePoint{mul_t({fp.p[0] + lo[0], fp.p[1] + lo[1], fp.p[2] + lo[2]}), *d};
+        return FacePoint{apply(inv, {fp.p[0] + lo[0], fp.p[1] + lo[1], fp.p[2] + lo[2]}), *d};
       });
   // направление "+x"… поворачивается в другую ось; не по оси — в свой вектор
   auto turn_key = [&](std::string& key, Vec3& vec) {
