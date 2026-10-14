@@ -5,6 +5,7 @@ add_executable(kika_tests
   analysis/test_analysis.cpp
   app/test_app.cpp
   app/test_roads.cpp
+  app/test_preview.cpp
   analysis/test_job.cpp
   advisor/test_advisor.cpp
   fem/test_fem.cpp
