@@ -1001,8 +1001,12 @@ void MainWindow::save_gcode(const QString& path) {
   QString out = path;
   const QFileInfo mi(gcode_path_);
   if (out.isEmpty()) {
-    out = QFileDialog::getSaveFileName(this, "Сохранить G-code", mi.absolutePath() + "/" + mi.completeBaseName() + ".gcode",
-                                       "G-code (*.gcode)");
+    // имя — по настройке «Имя файла» (как в Orca): {input_filename_base}, {print_time}…
+    slicer::Result r;
+    r.print_time_s = source_->time_s;
+    r.filament_g = source_->filament_g;
+    const QString name = qs(slicer::output_filename(source_->print.settings, ss(mi.completeBaseName()), &r));
+    out = QFileDialog::getSaveFileName(this, "Сохранить G-code", mi.absolutePath() + "/" + name, "G-code (*.gcode)");
     if (out.isEmpty()) return;
   }
   try {
@@ -1827,6 +1831,7 @@ void MainWindow::set_busy(bool busy) {
   act_open_job_->setEnabled(!busy);
   update_run_state();
   update_advise_state();
+  render_pauses();
 }
 
 void MainWindow::show_progress(bool on, double frac, const QString& text) {
@@ -1994,7 +1999,10 @@ void MainWindow::update_printer_source() {
         [gcode, print, name, stale, time_s, grams]() {
           const auto& f = print.settings.filament;
           PrintPayload pl;
-          pl.name = name;
+          slicer::Result r;
+          r.print_time_s = time_s;
+          r.filament_g = grams;
+          pl.name = slicer::output_filename(print.settings, name, &r);
           pl.for_klipper = print.settings.printer.flavor == slicer::Flavor::Klipper;
           pl.printer_name = qs(print.settings.printer.name);
           const int min = static_cast<int>(std::lround(time_s / 60));
@@ -2621,6 +2629,7 @@ void MainWindow::continue_script() {
       } catch (const std::exception&) {
         v = json::Value(value);
       }
+      if (f && (f->kind == slicer::FieldKind::Text || f->kind == slicer::FieldKind::Code)) v = json::Value(value);
       if (!f) {
         toast("--set: неизвестная настройка «" + qs(key) + "»", true);
       } else if (const auto err = slicer::check_field(*f, v, "--set"); !err.empty()) {
@@ -2783,6 +2792,8 @@ void MainWindow::continue_script() {
       toast(QString::fromUtf8(e.what()), true);
     }
   }
+  if (!script_.page.empty()) settings_->select_page(script_.page);
+  if (!script_.find.isEmpty()) settings_->search(script_.find);
   if (!script_.settings_shot.isEmpty()) {
     slicer::Settings st = print_ui_.settings;
     st.filament = job_filament();

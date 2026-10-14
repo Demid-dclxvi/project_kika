@@ -1,7 +1,8 @@
 #pragma once
 // Панель настроек печати слева (как в OrcaSlicer): принтер, пластик и профиль печати сверху,
-// под ними — страницы «Качество», «Прочность», «Скорость», «Поддержки», «Прочее» с полями
-// по таблице slicer::fields(). Внизу — «Нарезать». Принтер и пластик правятся в отдельном окне (⚙).
+// под ними — поиск и страницы «Качество», «Прочность», «Скорость», «Поддержки», «Прочее» с полями
+// по таблице slicer::fields(). Настройка, изменённая против выбранного профиля, подсвечена, рядом —
+// «↺» вернуть значение профиля. Внизу — «Нарезать». Принтер и пластик правятся в отдельном окне (⚙).
 
 #include <QFrame>
 #include <QString>
@@ -16,6 +17,7 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QScrollArea;
 class QStackedWidget;
@@ -43,25 +45,38 @@ class SettingsPanel : public QFrame {
   bool collapsed() const { return collapsed_; }
   // Окно настроек принтера или пластика (⚙).
   void edit(slicer::Section section);
+  // Поиск настройки по названию, разделу или ключу (пусто — все).
+  void search(const QString& text);
+  // Сколько настроек печати отличается от выбранного профиля.
+  int modified_count() const;
 
  private:
   struct Editor {
     const slicer::Field* field;
     QWidget* widget;
     std::vector<QWidget*> parts;  // вся строка — чтобы прятать тонкие настройки
+    QWidget* label = nullptr;     // подпись (у флажка — сам флажок): подсветка изменённого
+    QPushButton* reset = nullptr; // вернуть значение профиля
+    int page = 0;
+    QWidget* title = nullptr;     // заголовок раздела
   };
   QWidget* build_page(const std::string& name);
   void fill_printers();
   void fill_filaments();
   void fill_processes();
   void refresh();
-  void apply_advanced();
+  void apply_visibility();
+  void update_marks();
   void changed();
   void choose(slicer::Section section, QComboBox* combo);
   void save_process();
 
   slicer::Settings s_;
+  slicer::Settings base_;  // выбранный профиль печати: с ним сравниваются поля
   std::vector<Editor> editors_;
+  QString query_;
+  QLineEdit* search_ = nullptr;
+  QLabel* search_note_ = nullptr;
   bool collapsed_ = false;
   bool advanced_ = false;
   QWidget* body_ = nullptr;

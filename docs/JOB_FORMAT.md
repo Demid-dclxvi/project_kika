@@ -125,6 +125,20 @@ kika run задание.json              G-code берётся из поля "g
 | `speed_first_layer_infill` | заполнение первого слоя, мм/с | 50 |
 | `skirt_layers` | высота юбки, слоёв | 1 |
 | `reduce_retraction` | без отката, если перемещение целиком над деталью | `true` |
+| `seam_gap` | замкнутая стенка обрывается раньше начала на столько, % диаметра сопла | 10 |
+| `fuzzy_skin` | нечёткая поверхность: `none`, `external` (наружный контур), `all` (контур и отверстия), `allwalls` (все стенки); первый слой — без неё | `none` |
+| `fuzzy_thickness`, `fuzzy_point_dist` | полоса, в которой гуляет стенка, мм, и шаг точек, мм | 0,3, 0,8 |
+| `spiral_vase` | ваза: после нижних слоёв — одна стенка спиралью, сопло поднимается непрерывно; без верха, заполнения и поддержек | `false` |
+| `brim_type` | где кайма: `outer_only`, `inner_only` (в отверстиях), `outer_and_inner`, `no_brim` | `outer_only` |
+| `raft_layers`, `raft_contact_distance`, `raft_expansion` | подложка: слоёв (0 — нет), зазор до детали, мм, шире первого слоя детали на, мм | 0, 0,1, 1,5 |
+| `min_sparse_area` | кусок заполнения меньше этой площади — сплошной, мм² | 15 |
+| `overhang_slowdown` | замедлять нависающие стенки до `speed_overhang` | `true` |
+| `speed_first_layer_travel` | перемещения первого слоя, мм/с (0 — как остальные) | 0 |
+| `pause_layers` | пауза перед слоями: номера с 1 через запятую, `"12, 30"`; код паузы — у принтера (`pause_gcode`) | пусто |
+| `filename_format` | имя файла G-code: `{input_filename_base}`, `{filament_type}`, `{layer_height}`, `{nozzle_diameter}`, `{printer_model}`, `{print_time}`, `{total_weight}`, `{timestamp}` | `{input_filename_base}.gcode` |
+| `notes` | заметки — в G-code комментарием | пусто |
+
+У принтера (`printer`) — так же, как в OrcaSlicer: `bed_exclude` (запретная область стола: `"0x0,11x0,11x16,0x16"`, несколько — через `;`; у QIDI Q2 — левый передний угол с механизмом реза), `z_offset`, `nozzle_type` (`brass`, `stainless_steel`, `hardened_steel`), `min_layer_height`/`max_layer_height`, `deretract_speed`, `retract_restart_extra`, `retract_layer_change`, `wipe`/`wipe_distance` (протирка при откате), `air_filtration` (вентилятор фильтра камеры `M106 P3`), `before_layer_gcode`, `pause_gcode`. У пластика (`filament`): `vendor`, `abrasive` (с волокном — предупреждение при латунном сопле), `shrinkage` (усадка по XY, %: 99,5 — деталь печатается на 0,5 % крупнее), `nozzle_temp_min`/`nozzle_temp_max`, `full_fan_layer` (обдув нарастает до полного к этому слою), `air_filtration`, `exhaust_print`, `exhaust_end` (%), `start_gcode`, `end_gcode`.
 
 Рисунки заполнения (`pattern`). Плотность у всех — доля объёма пластика в области заполнения: 20 % у гироида и у сетки — одинаковое количество пластика.
 

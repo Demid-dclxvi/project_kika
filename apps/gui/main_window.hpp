@@ -97,6 +97,8 @@ struct StartupScript {
   std::optional<std::array<double, 3>> scale;  // масштаб детали (и нарезать заново)
   std::optional<std::array<double, 2>> move;   // положение детали на столе (и нарезать заново)
   std::optional<std::pair<double, double>> lay;  // положить на грань под точкой вида «Подготовка» (доли) — и нарезать
+  QString find;                     // поиск в панели настроек
+  std::string page;                 // страница панели настроек: «Качество», «Прочее»…
 };
 
 class MainWindow : public QMainWindow {
@@ -139,6 +141,8 @@ class MainWindow : public QMainWindow {
   void render_preview();
   void render_legend();
   void apply_layers();
+  void toggle_pause();
+  void render_pauses();
   void send_to_printer(bool start);
   // настройки печати слева
   void on_settings_changed();
@@ -320,6 +324,8 @@ class MainWindow : public QMainWindow {
   QPushButton* btn_save_gcode_ = nullptr;
   QCheckBox* auto_switch_ = nullptr;
   QVBoxLayout* preview_warns_ = nullptr;
+  QPushButton* btn_pause_ = nullptr;  // пауза перед верхним показанным слоем
+  QLabel* pause_info_ = nullptr;
   // принтер
   PrinterPanel* printer_ = nullptr;
   WebPane* web_ = nullptr;

@@ -149,17 +149,42 @@ std::vector<Field> build() {
   b.number<P>("bed_x", "Стол по X", "мм", &P::bed_x, 50, 2000);
   b.number<P>("bed_y", "Стол по Y", "мм", &P::bed_y, 50, 2000);
   b.number<P>("max_z", "Высота печати", "мм", &P::max_z, 20, 2000);
+  b.text<P>("bed_exclude", "Запретная область стола", &P::bed_exclude, FieldKind::Text,
+            "Углы многоугольника «x×y» через запятую, мм: 0x0,11x0,11x16,0x16; несколько — через «;». Деталь там "
+            "ставить нельзя (механизм реза, чистка сопла)")
+      .check_text = [](std::string_view t) {
+    std::string err;
+    parse_bed_exclude(t, &err);
+    return err;
+  };
   b.group("Прочее");
+  b.number<P>("z_offset", "Смещение по Z", "мм", &P::z_offset, -5, 5, 1, "Прибавляется ко всем высотам в G-code; обычно 0");
   b.boolean<P>("aux_fan", "Есть боковой обдув (M106 P2)", &P::aux_fan);
+  b.boolean<P>("air_filtration", "Есть очистка воздуха камеры (M106 P3)", &P::air_filtration,
+               "Вентилятор фильтра камеры; включает его пластик (страница «Охлаждение»)");
   b.boolean<P>("thumbnails", "Миниатюра в G-code", &P::thumbnails, "Картинка детали для экрана принтера и Moonraker");
   b.page("Экструдер");
   b.group("Сопло");
   b.number<P>("nozzle", "Диаметр сопла", "мм", &P::nozzle, 0.1, 2.0);
+  b.choice<P, NozzleType>("nozzle_type", "Материал сопла", &P::nozzle_type,
+                          {NozzleType::Brass, NozzleType::Stainless, NozzleType::Hardened}, nozzle_type_key, nozzle_type_name,
+                          nozzle_type_from_key, "Пластик с волокном (CF, GF) быстро стирает латунное сопло");
   b.number<P>("filament_diameter", "Диаметр прутка", "мм", &P::filament_diameter, 1.0, 3.5);
+  b.number<P>("min_layer_height", "Слой не тоньше", "мм", &P::min_layer_height, 0.01, 2.0, 1,
+              "Пределы высоты слоя для этого сопла: за ними — предупреждение");
+  b.number<P>("max_layer_height", "Слой не толще", "мм", &P::max_layer_height, 0.02, 2.0);
   b.group("Откат");
   b.number<P>("retract_length", "Длина отката", "мм", &P::retract_length, 0, 10);
   b.number<P>("retract_speed", "Скорость отката", "мм/с", &P::retract_speed, 5, 150);
+  b.number<P>("deretract_speed", "Скорость подачи после отката", "мм/с", &P::deretract_speed, 0, 150, 1, "0 — как откат");
+  b.number<P>("retract_restart_extra", "Добавка при подаче", "мм", &P::retract_restart_extra, -2, 5, 1,
+              "Подать больше (или меньше), чем откатили: против пустот после перемещений")
+      .advanced = true;
   b.number<P>("retract_min_travel", "Откат, если перемещение длиннее", "мм", &P::retract_min_travel, 0, 20);
+  b.boolean<P>("retract_layer_change", "Откат при смене слоя", &P::retract_layer_change);
+  b.boolean<P>("wipe", "Протирка при откате", &P::wipe,
+               "Сопло при откате возвращается по только что напечатанной линии — подтёк остаётся на ней");
+  b.number<P>("wipe_distance", "Длина протирки", "мм", &P::wipe_distance, 0, 10);
   b.number<P>("z_hop", "Подъём сопла при откате", "мм", &P::z_hop, 0, 5, 1, "0 — без подъёма");
   b.group("Пределы температуры");
   b.number<P>("max_nozzle_temp", "Сопло не горячее", "°C", &P::max_nozzle_temp, 150, 500);
@@ -181,17 +206,26 @@ std::vector<Field> build() {
   b.text<P>("end_gcode", "Финальный код", &P::end_gcode, FieldKind::Code,
             "Подстановки как в стартовом и ещё {max_layer_z}, {lift_z} (верх детали + 3 мм), {park_z} (не ниже "
             "половины высоты печати)");
+  b.text<P>("before_layer_gcode", "Код перед сменой слоя", &P::before_layer_gcode, FieldKind::Code,
+            "До подъёма на новый слой. Подстановки: {layer_num} (номер нового слоя, с 1), {layer_z}");
   b.text<P>("layer_gcode", "Код в начале слоя", &P::layer_gcode, FieldKind::Code, "Подстановки: {layer_num} (с 1), {layer_z}");
+  b.text<P>("pause_gcode", "Код паузы", &P::pause_gcode, FieldKind::Code,
+            "Для пауз на слоях (настройки печати, «Прочее»): Klipper — PAUSE, Marlin — M601");
 
   // ------------------------------------------------------------------ пластик
   b.page("Пластик");
   b.group("Пластик");
   b.text<F>("name", "Название", &F::name);
   b.text<F>("type", "Тип", &F::type, FieldKind::Text, "Как в базе материалов: PLA, PETG, ABS, ASA, PC, PA, TPU, …-CF");
+  b.text<F>("vendor", "Производитель", &F::vendor);
+  b.boolean<F>("abrasive", "С волокном (абразивный)", &F::abrasive,
+               "Углеволокно, стекловолокно: нужно сопло из закалённой стали");
   b.number<F>("density", "Плотность", "г/см³", &F::density, 0.5, 3.0);
   b.number<F>("cost", "Цена за кг", "", &F::cost, 0, 1e6, 1, "0 — не считать стоимость");
   b.group("Поток");
   b.number<F>("flow", "Поток", "%", &F::flow, 50, 150, 100, "Поправка экструзии: меньше 100 % — меньше пластика");
+  b.number<F>("shrinkage", "Усадка по XY", "%", &F::shrinkage, 80, 120, 100,
+              "Размер после остывания в процентах от напечатанного: 99,5 % — деталь печатается на 0,5 % крупнее");
   b.number<F>("max_volumetric", "Расход не больше", "мм³/с", &F::max_volumetric, 0.5, 100, 1,
               "Сколько пластика сопло успевает расплавить; скорость линий снижается под этот предел");
   b.number<F>("max_speed", "Скорость не выше", "мм/с", &F::max_speed, 5, 2000);
@@ -203,11 +237,16 @@ std::vector<Field> build() {
   b.number<F>("first_layer_bed_temp", "Стол, первый слой", "°C", &F::first_layer_bed_temp, 0, 200);
   b.number<F>("bed_temp", "Стол", "°C", &F::bed_temp, 0, 200);
   b.number<F>("chamber_temp", "Камера", "°C", &F::chamber_temp, 0, 120, 1, "0 — не греть (только у принтеров с подогревом камеры)");
+  b.number<F>("nozzle_temp_min", "Рекомендуемое сопло от", "°C", &F::nozzle_temp_min, 0, 500, 1,
+              "Диапазон производителя: температура вне его — предупреждение; 0 — не проверять");
+  b.number<F>("nozzle_temp_max", "Рекомендуемое сопло до", "°C", &F::nozzle_temp_max, 0, 500);
   b.page("Охлаждение");
   b.group("Обдув модели");
   b.number<F>("fan_min", "Обдув, наименьший", "%", &F::fan_min, 0, 100, 100);
   b.number<F>("fan_max", "Обдув, наибольший", "%", &F::fan_max, 0, 100, 100);
   b.integer<F>("fan_off_layers", "Без обдува первые", "слоёв", &F::fan_off_layers, 0, 20);
+  b.integer<F>("full_fan_layer", "Полный обдув со слоя", "", &F::full_fan_layer, 0, 100,
+               "Обдув нарастает плавно от первого слоя с обдувом до этого; 0 — сразу полный");
   b.number<F>("fan_full_time", "Обдув сильнее, если слой короче", "с", &F::fan_full_time, 0, 300, 1,
               "От наименьшего обдува (слой дольше) до наибольшего (слой короче времени замедления)");
   b.number<F>("overhang_fan", "Обдув нависаний и мостов", "%", &F::overhang_fan, 0, 100, 100);
@@ -216,10 +255,20 @@ std::vector<Field> build() {
   b.number<F>("slowdown_time", "Замедлять, если слой короче", "с", &F::slowdown_time, 0, 120, 1,
               "Чтобы слой успел остыть; 0 — не замедлять");
   b.number<F>("slowdown_speed", "Замедлять не ниже", "мм/с", &F::slowdown_speed, 1, 200);
+  b.group("Очистка воздуха камеры");
+  b.boolean<F>("air_filtration", "Включать очистку воздуха", &F::air_filtration,
+               "Вентилятор фильтра камеры (M106 P3), если он есть у принтера: для ABS, ASA, PC, PA — от запаха");
+  b.number<F>("exhaust_print", "Во время печати", "%", &F::exhaust_print, 0, 100, 100);
+  b.number<F>("exhaust_end", "После печати", "%", &F::exhaust_end, 0, 100, 100, "Остаётся включённым после печати");
   b.page("Откат");
   b.group("Откат для этого пластика");
   b.number<F>("retract_length", "Длина отката", "мм", &F::retract_length, -1, 10, 1, "−1 — как у принтера");
   b.number<F>("retract_speed", "Скорость отката", "мм/с", &F::retract_speed, -1, 150, 1, "−1 — как у принтера");
+  b.page("G-code");
+  b.group("G-code пластика");
+  b.text<F>("start_gcode", "Стартовый код пластика", &F::start_gcode, FieldKind::Code,
+            "После стартового кода принтера; подстановки — как в нём");
+  b.text<F>("end_gcode", "Финальный код пластика", &F::end_gcode, FieldKind::Code, "Перед финальным кодом принтера");
 
   // ------------------------------------------------------------------ печать
   const std::string same = "0 — как ширина по умолчанию";
@@ -240,6 +289,8 @@ std::vector<Field> build() {
   b.group("Шов");
   b.choice<S, Seam>("seam", "Положение шва", &S::seam, {Seam::Aligned, Seam::Nearest, Seam::Rear, Seam::Random}, seam_key,
                     seam_name, seam_from_key, "Где начинается и кончается каждая стенка");
+  b.number<S>("seam_gap", "Зазор шва", "% сопла", &S::seam_gap, 0, 100, 100,
+              "Замкнутая стенка обрывается чуть раньше начала — шов без наплыва");
   b.group("Точность");
   b.number<S>("xy_hole_comp", "Поправка отверстий", "мм", &S::xy_hole_comp, -1, 1, 1,
               "Отверстия шире на столько (каждая сторона); обычно отверстия выходят уже модели")
@@ -288,11 +339,16 @@ std::vector<Field> build() {
                "Иначе все сплошные линии — под углом заполнения")
       .advanced = true;
   b.number<S>("infill_overlap", "Заход заполнения на стенки", "%", &S::infill_overlap, 0, 50, 100).advanced = true;
+  b.number<S>("min_sparse_area", "Порог сплошного заполнения", "мм²", &S::min_sparse_area, 0, 1000, 1,
+              "Кусок заполнения меньше этой площади печатается сплошным — мелкие перемычки крепче")
+      .advanced = true;
 
   b.page("Скорость");
   b.group("Первый слой");
   b.number<S>("speed_first_layer", "Первый слой", "мм/с", &S::speed_first_layer, 5, 500);
   b.number<S>("speed_first_layer_infill", "Заполнение первого слоя", "мм/с", &S::speed_first_layer_infill, 5, 500);
+  b.number<S>("speed_first_layer_travel", "Перемещения первого слоя", "мм/с", &S::speed_first_layer_travel, 0, 2000, 1,
+              "0 — как на остальных слоях");
   b.group("Остальные слои");
   b.number<S>("speed_outer_wall", "Наружная стенка", "мм/с", &S::speed_outer_wall, 5, 2000);
   b.number<S>("speed_inner_wall", "Внутренние стенки", "мм/с", &S::speed_inner_wall, 5, 2000);
@@ -307,6 +363,8 @@ std::vector<Field> build() {
   b.number<S>("speed_support", "Поддержки", "мм/с", &S::speed_support, 5, 1000);
   b.number<S>("speed_support_interface", "Плотные слои поддержек", "мм/с", &S::speed_support_interface, 5, 1000);
   b.group("Нависания и мосты");
+  b.boolean<S>("overhang_slowdown", "Замедлять на нависаниях", &S::overhang_slowdown,
+               "Стенки над пустотой — со скоростью нависаний: меньше провисают");
   b.number<S>("speed_overhang", "Нависающие стенки", "мм/с", &S::speed_overhang, 5, 500);
   b.number<S>("speed_bridge", "Мосты", "мм/с", &S::speed_bridge, 5, 500);
   b.group("Перемещения");
@@ -333,20 +391,52 @@ std::vector<Field> build() {
   b.integer<S>("support_interface_layers", "Плотных слоёв под деталью", "", &S::support_interface_layers, 0, 10);
   b.number<S>("support_spacing", "Шаг линий", "мм", &S::support_spacing, 0.5, 10);
   b.number<S>("support_interface_spacing", "Шаг плотных линий", "мм", &S::support_interface_spacing, 0.2, 5);
+  b.group("Подложка");
+  b.integer<S>("raft_layers", "Слоёв подложки", "", &S::raft_layers, 0, 20,
+               "Подложка (raft) под всей деталью: держит на столе пластики, склонные к отрыву углов; 0 — без неё");
+  b.number<S>("raft_contact_distance", "Зазор до детали", "мм", &S::raft_contact_distance, 0, 1);
+  b.number<S>("raft_expansion", "Подложка шире детали на", "мм", &S::raft_expansion, 0, 20);
 
   b.page("Прочее");
-  b.group("Прилипание к столу");
+  b.group("Юбка");
   b.boolean<S>("skirt", "Юбка", &S::skirt, "Контур вокруг детали на первых слоях: прочищает сопло");
   b.integer<S>("skirt_loops", "Контуров юбки", "", &S::skirt_loops, 1, 10);
   b.integer<S>("skirt_layers", "Высота юбки", "слоёв", &S::skirt_layers, 1, 100);
   b.number<S>("skirt_distance", "Юбка от детали", "мм", &S::skirt_distance, 0, 50);
+  b.group("Кайма");
+  b.choice<S, BrimType>("brim_type", "Где кайма", &S::brim_type, {BrimType::Outer, BrimType::Inner, BrimType::Both, BrimType::None},
+                        brim_key, brim_name, brim_from_key, "Внутри отверстий кайма держит тонкие стенки вокруг них");
   b.number<S>("brim_width", "Кайма", "мм", &S::brim_width, 0, 50, 1, "Полоса вокруг первого слоя, держит деталь на столе; 0 — без каймы");
   b.number<S>("brim_gap", "Зазор каймы", "мм", &S::brim_gap, 0, 5);
+  b.group("Особые режимы");
+  b.boolean<S>("spiral_vase", "Ваза (спираль)", &S::spiral_vase,
+               "Одна наружная стенка спиралью без швов: сопло всё время поднимается. Без верха, заполнения и "
+               "поддержек — для ваз и колпаков");
+  b.group("Нечёткая поверхность");
+  b.choice<S, FuzzySkin>("fuzzy_skin", "Нечёткая поверхность", &S::fuzzy_skin,
+                         {FuzzySkin::None, FuzzySkin::Contour, FuzzySkin::External, FuzzySkin::All}, fuzzy_key, fuzzy_name,
+                         fuzzy_from_key, "Стенка дрожит внутрь и наружу: шершавая поверхность, слоёв не видно (кроме первого слоя)");
+  b.number<S>("fuzzy_thickness", "Толщина", "мм", &S::fuzzy_thickness, 0.01, 2, 1,
+              "Полоса, в которой гуляет стенка; лучше не шире наружной стенки");
+  b.number<S>("fuzzy_point_dist", "Шаг точек", "мм", &S::fuzzy_point_dist, 0.1, 10);
   b.group("G-code");
   b.boolean<S>("reduce_retraction", "Без отката внутри детали", &S::reduce_retraction,
                "Перемещение целиком над деталью — без отката: подтёк останется внутри");
   b.boolean<S>("label_objects", "Размечать детали (Klipper)", &S::label_objects,
                "EXCLUDE_OBJECT: деталь можно отменить во время печати, карта стола снимается только под ней");
+  b.text<S>("pause_layers", "Пауза перед слоями", &S::pause_layers, FieldKind::Text,
+            "Номера слоёв через запятую: принтер встанет на паузу перед ними (вложить гайку, сменить пластик). Удобно "
+            "ставить во вкладке «Предпросмотр»")
+      .check_text = [](std::string_view t) {
+    std::string err;
+    parse_layer_list(t, &err);
+    return err;
+  };
+  b.text<S>("filename_format", "Имя файла", &S::filename_format, FieldKind::Text,
+            "Подстановки: {input_filename_base}, {filament_type}, {layer_height}, {nozzle_diameter}, {printer_model}, "
+            "{print_time}, {total_weight}, {timestamp}");
+  b.group("Заметки");
+  b.text<S>("notes", "Заметки", &S::notes, FieldKind::Code, "Для себя: пишутся в G-code комментарием");
   return v;
 }
 
@@ -414,6 +504,8 @@ std::string check_field(const Field& f, const Value& v, std::string_view where) 
     case FieldKind::Text:
     case FieldKind::Code:
       if (!v.is_string()) return name + ": ожидается строка";
+      if (f.check_text)
+        if (const auto err = f.check_text(v.as_string()); !err.empty()) return name + ": " + err;
       return {};
     case FieldKind::Choice: {
       if (!v.is_string()) return name + ": ожидается строка";

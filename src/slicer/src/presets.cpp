@@ -103,6 +103,10 @@ const std::vector<Printer>& printers() {
     i7.retract_min_travel = 2.0;
     i7.z_hop = 0;
     i7.aux_fan = false;
+    i7.air_filtration = false;
+    i7.nozzle_type = NozzleType::Brass;
+    i7.bed_exclude.clear();
+    i7.pause_gcode = "M601";
     i7.start_gcode = kMarlinStart;
     i7.end_gcode = kMarlinEnd;
 
@@ -144,26 +148,28 @@ namespace {
 // Обычные пластики: значения — типичные для принтера с закрытой камерой и соплом 0,4 мм.
 // тип, сопло, сопло 1-го слоя, стол, стол 1-го слоя, камера, поток, мм³/с, мм/с, плотность,
 // обдув мин/макс, слоёв без обдува, полный обдув при слое короче, замедление при слое короче,
-// обдув нависаний, боковой обдув
+// обдув нависаний, боковой обдув, рекомендуемая температура сопла от и до, с волокном
 struct FilamentRow {
   const char* type;
   double nozzle, nozzle1, bed, bed1, chamber, flow, vol, speed, density;
   double fan_min, fan_max;
   int fan_off;
   double full_time, slow_time, overhang, aux;
+  double t_min, t_max;
+  bool abrasive;
 };
 
 constexpr FilamentRow kFilaments[] = {
-    {"PLA", 210, 215, 60, 60, 0, 0.98, 21, 500, 1.24, 1.0, 1.0, 1, 60, 8, 1.0, 0.7},
-    {"PLA-CF", 220, 225, 60, 60, 0, 0.98, 15, 400, 1.29, 1.0, 1.0, 1, 60, 8, 1.0, 0.5},
-    {"PETG", 240, 245, 70, 70, 0, 0.95, 12, 300, 1.27, 0.3, 0.5, 1, 20, 8, 0.9, 0},
-    {"PETG-CF", 255, 255, 80, 80, 0, 0.95, 11, 250, 1.25, 0.05, 0.4, 3, 30, 6, 1.0, 0},
-    {"ABS", 250, 255, 100, 100, 50, 0.95, 18, 400, 1.04, 0.1, 0.4, 3, 30, 4, 0.8, 0},
-    {"ASA", 255, 255, 100, 100, 55, 0.92, 16, 400, 1.07, 0.1, 0.5, 3, 40, 4, 0.8, 0},
-    {"PC", 270, 270, 100, 100, 60, 0.95, 10, 250, 1.20, 0.0, 0.3, 3, 30, 6, 0.6, 0},
-    {"PA", 260, 260, 80, 80, 0, 0.96, 8, 200, 1.14, 0.0, 0.3, 3, 20, 8, 0.4, 0},
-    {"PA-CF", 280, 280, 80, 80, 0, 0.96, 8, 200, 1.25, 0.2, 0.4, 3, 10, 8, 0.4, 0},
-    {"TPU", 225, 225, 45, 45, 0, 1.0, 3.6, 40, 1.21, 1.0, 1.0, 1, 60, 8, 1.0, 0},
+    {"PLA", 210, 215, 60, 60, 0, 0.98, 21, 500, 1.24, 1.0, 1.0, 1, 60, 8, 1.0, 0.7, 190, 240, false},
+    {"PLA-CF", 220, 225, 60, 60, 0, 0.98, 15, 400, 1.29, 1.0, 1.0, 1, 60, 8, 1.0, 0.5, 210, 240, true},
+    {"PETG", 240, 245, 70, 70, 0, 0.95, 12, 300, 1.27, 0.3, 0.5, 1, 20, 8, 0.9, 0, 220, 260, false},
+    {"PETG-CF", 255, 255, 80, 80, 0, 0.95, 11, 250, 1.25, 0.05, 0.4, 3, 30, 6, 1.0, 0, 240, 270, true},
+    {"ABS", 250, 255, 100, 100, 50, 0.95, 18, 400, 1.04, 0.1, 0.4, 3, 30, 4, 0.8, 0, 240, 270, false},
+    {"ASA", 255, 255, 100, 100, 55, 0.92, 16, 400, 1.07, 0.1, 0.5, 3, 40, 4, 0.8, 0, 240, 280, false},
+    {"PC", 270, 270, 100, 100, 60, 0.95, 10, 250, 1.20, 0.0, 0.3, 3, 30, 6, 0.6, 0, 260, 300, false},
+    {"PA", 260, 260, 80, 80, 0, 0.96, 8, 200, 1.14, 0.0, 0.3, 3, 20, 8, 0.4, 0, 250, 290, false},
+    {"PA-CF", 280, 280, 80, 80, 0, 0.96, 8, 200, 1.25, 0.2, 0.4, 3, 10, 8, 0.4, 0, 260, 300, true},
+    {"TPU", 225, 225, 45, 45, 0, 1.0, 3.6, 40, 1.21, 1.0, 1.0, 1, 60, 8, 1.0, 0, 200, 250, false},
 };
 
 Filament from_row(const FilamentRow& r) {
@@ -186,6 +192,9 @@ Filament from_row(const FilamentRow& r) {
   f.slowdown_time = r.slow_time;
   f.overhang_fan = r.overhang;
   f.aux_fan = r.aux;
+  f.nozzle_temp_min = r.t_min;
+  f.nozzle_temp_max = r.t_max;
+  f.abrasive = r.abrasive;
   return f;
 }
 
@@ -394,6 +403,90 @@ std::optional<Seam> seam_from_key(std::string_view key) {
   if (k == "nearest") return Seam::Nearest;
   if (k == "rear" || k == "back") return Seam::Rear;
   if (k == "random") return Seam::Random;
+  return std::nullopt;
+}
+
+std::string_view nozzle_type_key(NozzleType t) {
+  switch (t) {
+    case NozzleType::Brass: return "brass";
+    case NozzleType::Stainless: return "stainless_steel";
+    case NozzleType::Hardened: return "hardened_steel";
+  }
+  return "brass";
+}
+
+std::string_view nozzle_type_name(NozzleType t) {
+  switch (t) {
+    case NozzleType::Brass: return "Латунь";
+    case NozzleType::Stainless: return "Нержавеющая сталь";
+    case NozzleType::Hardened: return "Закалённая сталь";
+  }
+  return "Латунь";
+}
+
+std::optional<NozzleType> nozzle_type_from_key(std::string_view key) {
+  const std::string k = lower_key(key);
+  if (k == "brass" || k == "undefine" || k == "undefined") return NozzleType::Brass;
+  if (k == "stainless_steel" || k == "stainless") return NozzleType::Stainless;
+  if (k == "hardened_steel" || k == "hardened" || k == "tungsten_carbide") return NozzleType::Hardened;
+  return std::nullopt;
+}
+
+std::string_view fuzzy_key(FuzzySkin f) {
+  switch (f) {
+    case FuzzySkin::None: return "none";
+    case FuzzySkin::Contour: return "external";
+    case FuzzySkin::External: return "all";
+    case FuzzySkin::All: return "allwalls";
+  }
+  return "none";
+}
+
+std::string_view fuzzy_name(FuzzySkin f) {
+  switch (f) {
+    case FuzzySkin::None: return "Нет";
+    case FuzzySkin::Contour: return "Наружный контур";
+    case FuzzySkin::External: return "Контур и отверстия";
+    case FuzzySkin::All: return "Все стенки";
+  }
+  return "Нет";
+}
+
+std::optional<FuzzySkin> fuzzy_from_key(std::string_view key) {
+  const std::string k = lower_key(key);
+  if (k == "none" || k == "no" || k.empty()) return FuzzySkin::None;
+  if (k == "external" || k == "contour") return FuzzySkin::Contour;
+  if (k == "all" || k == "contour_and_hole") return FuzzySkin::External;
+  if (k == "allwalls" || k == "all_walls") return FuzzySkin::All;
+  return std::nullopt;
+}
+
+std::string_view brim_key(BrimType b) {
+  switch (b) {
+    case BrimType::Outer: return "outer_only";
+    case BrimType::Inner: return "inner_only";
+    case BrimType::Both: return "outer_and_inner";
+    case BrimType::None: return "no_brim";
+  }
+  return "outer_only";
+}
+
+std::string_view brim_name(BrimType b) {
+  switch (b) {
+    case BrimType::Outer: return "Снаружи";
+    case BrimType::Inner: return "Внутри отверстий";
+    case BrimType::Both: return "Снаружи и внутри";
+    case BrimType::None: return "Без каймы";
+  }
+  return "Снаружи";
+}
+
+std::optional<BrimType> brim_from_key(std::string_view key) {
+  const std::string k = lower_key(key);
+  if (k == "outer_only" || k == "outer" || k == "auto_brim" || k == "brim_ears") return BrimType::Outer;
+  if (k == "inner_only" || k == "inner") return BrimType::Inner;
+  if (k == "outer_and_inner" || k == "both") return BrimType::Both;
+  if (k == "no_brim" || k == "none") return BrimType::None;
   return std::nullopt;
 }
 

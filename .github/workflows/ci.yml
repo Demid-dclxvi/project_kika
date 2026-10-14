@@ -221,6 +221,12 @@ jobs:
           xvfb-run -a -s "-screen 0 1600x1000x24" build/${{ matrix.preset }}/bin/kika-gui \
             examples/bracket_L.3mf --tab preview --color speed --layers 1:120 --view part \
             --screenshot kika-gui-linux-preview-speed.png --size 1560x940
+          # настройки как в Orca: пауза на слое, нечёткая поверхность, подложка; поиск в панели настроек
+          xvfb-run -a -s "-screen 0 1600x1000x24" build/${{ matrix.preset }}/bin/kika-gui \
+            examples/bracket_L.3mf --set pause_layers=60 --set fuzzy_skin=external --set raft_layers=2 --tab preview \
+            --layers 1:60 --find шов --save-gcode bracket_L_orca.gcode --screenshot kika-gui-linux-orca.png --size 1560x940
+          grep -q "^PAUSE$" bracket_L_orca.gcode
+          grep -q "; raft_layers = 2" bracket_L_orca.gcode
 
       - name: Сборка окна в папку
         if: matrix.preset == 'ci-windows-gui'

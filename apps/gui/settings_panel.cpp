@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <QGridLayout>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QScrollArea>
 #include <QSettings>
@@ -97,6 +98,18 @@ SettingsPanel::SettingsPanel(QWidget* parent) : QFrame(parent) {
   connect(filament_, &QComboBox::activated, this, [this](int) { choose(Section::Filament, filament_); });
   connect(process_, &QComboBox::activated, this, [this](int) { choose(Section::Process, process_); });
 
+  // поиск
+  search_ = new QLineEdit;
+  search_->setObjectName("search");
+  search_->setPlaceholderText("Найти настройку…");
+  search_->setClearButtonEnabled(true);
+  search_->setToolTip("По названию, разделу или ключу (как в JSON и kika settings): «откат», «шов», seam_gap");
+  connect(search_, &QLineEdit::textChanged, this, [this](const QString& t) { search(t); });
+  cv->addWidget(search_);
+  search_note_ = make_hint("");
+  search_note_->hide();
+  cv->addWidget(search_note_);
+
   // страницы
   {
     QHBoxLayout* seg = nullptr;
@@ -125,7 +138,7 @@ SettingsPanel::SettingsPanel(QWidget* parent) : QFrame(parent) {
   connect(advanced_box_, &QCheckBox::toggled, this, [this](bool on) {
     advanced_ = on;
     QSettings("Kika", "kika-gui").setValue("settings/advanced", on);
-    apply_advanced();
+    apply_visibility();
   });
   cv->addWidget(advanced_box_);
   cv->addWidget(pages_, 1);
@@ -138,7 +151,7 @@ SettingsPanel::SettingsPanel(QWidget* parent) : QFrame(parent) {
   v->addWidget(slice_);
   status_ = make_hint("");
   v->addWidget(status_);
-  apply_advanced();
+  apply_visibility();
   set_settings(s_);
 }
 
@@ -160,18 +173,19 @@ QWidget* SettingsPanel::build_page(const std::string& name) {
   bv->addLayout(grid);
   std::string group;
   int r = 0;
-  std::vector<std::pair<QWidget*, std::vector<const slicer::Field*>>> heads;  // заголовок раздела и его поля
+  QWidget* title = nullptr;
+  const int page = static_cast<int>(page_buttons_.size()) - 1;  // кнопка страницы уже добавлена
   for (const auto& f : slicer::fields()) {
     if (f.section != Section::Process || f.page != name) continue;
     if (f.group != group) {
       if (!group.empty()) grid->setRowMinimumHeight(r++, 8);
       group = f.group;
-      auto* title = make_label(qs(group), "groupTitle", false);
-      grid->addWidget(title, r++, 0, 1, 3);
-      heads.push_back({title, {}});
+      title = make_label(qs(group), "groupTitle", false);
+      grid->addWidget(title, r++, 0, 1, 4);
     }
-    heads.back().second.push_back(&f);
     Editor ed{&f, nullptr, {}};
+    ed.page = page;
+    ed.title = title;
     auto* w = make_field_editor(f, this, [this, &f] {
       for (auto& e : editors_)
         if (e.field == &f) {
@@ -182,25 +196,103 @@ QWidget* SettingsPanel::build_page(const std::string& name) {
         }
     });
     ed.widget = w;
+    const int row0 = r;
     r = add_field_row(grid, r, f, w, &ed.parts);
+    ed.label = ed.parts.empty() ? w : ed.parts.front();
+    auto* reset = make_icon_button("↺", "Вернуть значение профиля");
+    reset->setObjectName("resetField");
+    reset->setFixedWidth(22);
+    grid->addWidget(reset, row0, 3, Qt::AlignTop);
+    connect(reset, &QPushButton::clicked, this, [this, &f] {
+      f.set(s_, f.get(base_));
+      refresh();
+      changed();
+    });
+    ed.reset = reset;
     editors_.push_back(std::move(ed));
   }
-  // заголовок раздела, в котором все поля тонкие, прячется вместе с ними
-  for (auto& [title, list] : heads) {
-    bool all_adv = !list.empty();
-    for (const auto* f : list) all_adv = all_adv && f->advanced;
-    if (all_adv) title->setProperty("advanced_group", true);
-  }
+  grid->setColumnMinimumWidth(3, 22);
   bv->addStretch();
   scroll->setWidget(body);
   return scroll;
 }
 
-void SettingsPanel::apply_advanced() {
-  for (auto& e : editors_)
-    for (auto* w : e.parts) w->setVisible(advanced_ || !e.field->advanced);
-  for (auto* page : pages_->findChildren<QLabel*>())
-    if (page->property("advanced_group").toBool()) page->setVisible(advanced_);
+namespace {
+
+bool matches(const slicer::Field& f, const QString& q) {
+  return qs(f.label).contains(q, Qt::CaseInsensitive) || qs(f.group).contains(q, Qt::CaseInsensitive) ||
+         qs(f.key).contains(q, Qt::CaseInsensitive) || qs(f.page).contains(q, Qt::CaseInsensitive);
+}
+
+}  // namespace
+
+// Видимость строк: тонкие настройки — в режиме «Все настройки»; при поиске — только найденные
+// (и тонкие тоже). Заголовок раздела — если в нём что-то видно; страницы без найденного — серые.
+void SettingsPanel::apply_visibility() {
+  const QString q = query_.trimmed();
+  std::vector<int> found(page_buttons_.size(), 0);
+  std::vector<std::pair<QWidget*, bool>> titles;
+  for (auto& e : editors_) {
+    const bool on = q.isEmpty() ? (advanced_ || !e.field->advanced) : matches(*e.field, q);
+    for (auto* w : e.parts) w->setVisible(on);
+    if (e.reset) e.reset->setVisible(on && e.reset->property("on").toBool());
+    if (on) ++found[static_cast<std::size_t>(e.page)];
+    if (titles.empty() || titles.back().first != e.title)
+      titles.push_back({e.title, on});
+    else
+      titles.back().second = titles.back().second || on;
+  }
+  for (auto& [t, on] : titles)
+    if (t) t->setVisible(on);
+  int total = 0;
+  for (std::size_t i = 0; i < page_buttons_.size(); ++i) {
+    page_buttons_[i]->setEnabled(q.isEmpty() || found[i] > 0);
+    total += found[i];
+  }
+  if (!q.isEmpty()) {
+    // открыть страницу с найденным
+    const int cur = pages_->currentIndex();
+    if (cur < 0 || found[static_cast<std::size_t>(cur)] == 0)
+      for (std::size_t i = 0; i < found.size(); ++i)
+        if (found[i] > 0) {
+          page_buttons_[i]->setChecked(true);
+          pages_->setCurrentIndex(static_cast<int>(i));
+          break;
+        }
+    QString pages;
+    for (std::size_t i = 0; i < found.size(); ++i)
+      if (found[i] > 0) pages += (pages.isEmpty() ? "" : ", ") + page_buttons_[i]->text() + QString(" — %1").arg(found[i]);
+    search_note_->setText(total ? QString("Найдено: %1").arg(pages) : QString("Ничего не нашлось."));
+  }
+  search_note_->setVisible(!q.isEmpty());
+}
+
+void SettingsPanel::search(const QString& text) {
+  query_ = text;
+  if (search_->text() != text) search_->setText(text);
+  apply_visibility();
+}
+
+// Изменённые против профиля: подпись подсвечена, «↺» виден.
+void SettingsPanel::update_marks() {
+  for (auto& e : editors_) {
+    const bool mod = json::dump(e.field->get(s_)) != json::dump(e.field->get(base_));
+    if (e.label && e.label->property("modified").toBool() != mod) {
+      e.label->setProperty("modified", mod);
+      repolish(e.label);
+    }
+    if (e.reset) {
+      e.reset->setProperty("on", mod);
+      e.reset->setVisible(mod && e.label && !e.label->isHidden());  // строка не спрятана (страницы — не в счёт)
+    }
+  }
+}
+
+int SettingsPanel::modified_count() const {
+  int n = 0;
+  for (const auto& e : editors_)
+    if (json::dump(e.field->get(s_)) != json::dump(e.field->get(base_))) ++n;
+  return n;
 }
 
 void SettingsPanel::set_settings(const slicer::Settings& s) {
@@ -213,10 +305,12 @@ void SettingsPanel::set_settings(const slicer::Settings& s) {
 
 void SettingsPanel::refresh() {
   for (auto& e : editors_) show_field(*e.field, e.widget, s_);
+  update_marks();
 }
 
 void SettingsPanel::changed() {
   fill_processes();  // профиль печати «(изменён)»
+  update_marks();
   if (on_changed) on_changed();
 }
 
@@ -287,7 +381,10 @@ void SettingsPanel::fill_processes() {
     for (const auto& f : slicer::fields())
       if (f.section == Section::Process) f.set(t, f.get(d));
     process_->addItem("Стандартный", "b:default");
-    if (section_json(t, Section::Process) == now) sel = 0;
+    if (section_json(t, Section::Process) == now) {
+      sel = 0;
+      base_ = t;
+    }
   }
   for (const auto& p : app::list_profiles(Section::Process)) {
     process_->addItem(qs(p.name), "u:" + to_qpath(p.path));
@@ -295,12 +392,19 @@ void SettingsPanel::fill_processes() {
     try {
       slicer::Settings t = s_;
       app::load_profile(Section::Process, p.path, t);
-      if (section_json(t, Section::Process) == now) sel = process_->count() - 1;
+      if (section_json(t, Section::Process) == now) {
+        sel = process_->count() - 1;
+        base_ = t;
+      }
     } catch (const std::exception&) {
     }
   }
   if (sel < 0) {
-    process_->addItem("Свои настройки (не сохранены)", "c:");
+    // профиль, от которого правки, — прежний: подпись вида «Стандартный — изменён: 3»
+    int n = 0;
+    for (const auto& f : slicer::fields())
+      if (f.section == Section::Process && json::dump(f.get(s_)) != json::dump(f.get(base_))) ++n;
+    process_->addItem(QString("Свои настройки — изменено %1").arg(n), "c:");
     sel = process_->count() - 1;
   }
   process_->setCurrentIndex(sel);
@@ -345,6 +449,7 @@ void SettingsPanel::save_process() {
   if (!ok || name.isEmpty()) return;
   try {
     app::save_profile(Section::Process, ss(name), s_);
+    base_ = s_;
     fill_processes();
   } catch (const std::exception& e) {
     QMessageBox::warning(this, "Профиль", QString::fromUtf8(e.what()));

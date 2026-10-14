@@ -23,14 +23,26 @@ enum class Flavor {
 std::string_view flavor_key(Flavor f);  // marlin, klipper
 std::optional<Flavor> flavor_from_key(std::string_view key);
 
+// Сопло: абразивный пластик (с волокном) быстро стирает латунное.
+enum class NozzleType { Brass, Stainless, Hardened };
+std::string_view nozzle_type_key(NozzleType t);  // brass, stainless_steel, hardened_steel (как в OrcaSlicer)
+std::optional<NozzleType> nozzle_type_from_key(std::string_view key);
+std::string_view nozzle_type_name(NozzleType t);
+
 // Принтер: стол, сопло, пределы движения, откат, стартовый и финальный код.
 struct Printer {
   std::string key = "qidi_q2";
   std::string name = "QIDI Q2";
   Flavor flavor = Flavor::Klipper;
   double bed_x = 270, bed_y = 270, max_z = 256;  // мм
+  // Запретная область стола: многоугольник «x1xy1,x2xy2,…» в мм, как bed_exclude_area у OrcaSlicer
+  // (у QIDI Q2 — левый передний угол: там рез прутка и чистка сопла). Пусто — нет.
+  std::string bed_exclude = "0x0,11x0,11x16,0x16";
+  double z_offset = 0;           // мм: прибавляется ко всем высотам Z в G-code
   double nozzle = 0.4;
+  NozzleType nozzle_type = NozzleType::Hardened;
   double filament_diameter = 1.75;
+  double min_layer_height = 0.08, max_layer_height = 0.32;  // мм: пределы высоты слоя для этого сопла
   double max_nozzle_temp = 370, max_bed_temp = 120;
   double max_chamber_temp = 65;  // 0 — камера без подогрева
   // пределы движения: скорости и ускорения из настроек печати к ним прижимаются
@@ -40,9 +52,15 @@ struct Printer {
   double max_speed_z = 20;       // мм/с
   // откат (пластик может задать свою длину и скорость)
   double retract_length = 0.8, retract_speed = 30;  // мм, мм/с
+  double deretract_speed = 0;                       // мм/с: подача после отката (0 — как откат)
+  double retract_restart_extra = 0;                 // мм: подать больше, чем откатили (компенсация подтёка)
   double retract_min_travel = 1.0;                  // мм: короче — без отката
+  bool retract_layer_change = true;                 // откат при смене слоя
+  bool wipe = false;                                // протирка: сопло при откате идёт назад по только что напечатанной линии
+  double wipe_distance = 1.5;                       // мм
   double z_hop = 0.4;                               // подъём сопла на перемещениях с откатом, мм
   bool aux_fan = true;          // боковой обдув модели (M106 P2)
+  bool air_filtration = true;   // вентилятор очистки воздуха камеры (M106 P3)
   bool thumbnails = true;       // миниатюры в G-code (экран принтера, Moonraker)
   // Подстановки: {nozzle_temp}, {first_layer_nozzle_temp}, {bed_temp}, {first_layer_bed_temp},
   // {chamber_temp}, {bed_x}, {bed_y}, {max_z}, {filament_type}, {total_layers},
@@ -50,17 +68,23 @@ struct Printer {
   // в коде слоя — {layer_num} (с 1) и {layer_z}.
   std::string start_gcode;
   std::string end_gcode;
-  std::string layer_gcode;       // в начале каждого слоя
+  std::string before_layer_gcode;  // перед сменой слоя (до подъёма на новый слой)
+  std::string layer_gcode;         // в начале каждого слоя
+  std::string pause_gcode = "PAUSE";  // пауза на слое (Klipper — PAUSE, Marlin — M601)
 };
 
 // Пластик: температуры, поток, обдув, откат, плотность и цена.
 struct Filament {
   std::string name = "PETG";  // название профиля
   std::string type = "PETG";  // как в базе материалов: PLA, PETG, ABS…
+  std::string vendor;          // производитель (для себя)
+  bool abrasive = false;       // с волокном (CF, GF): стирает латунное сопло
   double nozzle_temp = 240, first_layer_nozzle_temp = 245;
+  double nozzle_temp_min = 220, nozzle_temp_max = 260;  // рекомендуемый диапазон сопла, °C (0 — не проверять)
   double bed_temp = 70, first_layer_bed_temp = 70;
   double chamber_temp = 0;       // 0 — не греть
   double flow = 1.0;             // поправка потока
+  double shrinkage = 1.0;        // усадка по XY: размер после остывания / размер при печати (деталь печатается крупнее)
   double max_volumetric = 12;    // мм³/с: предел расхода сопла для этого пластика
   double max_speed = 300;        // мм/с — ограничение для этого пластика
   double density = 1.27;         // г/см³
@@ -68,14 +92,19 @@ struct Filament {
   // обдув модели, доли 0…1
   double fan_min = 0.3, fan_max = 0.6;
   int fan_off_layers = 1;        // первые слои без обдува
+  int full_fan_layer = 0;        // обдув нарастает до полного к этому слою (0 — сразу полный)
   double fan_full_time = 20;     // слой короче (с) — обдув сильнее, до fan_max
   double slowdown_time = 6;      // слой короче (с) — печать медленнее, но не ниже slowdown_speed
   double slowdown_speed = 20;    // мм/с
   double overhang_fan = 0.9;     // нависающие стенки и мосты
   double aux_fan = 0;            // боковой обдув, если есть у принтера
+  // очистка воздуха камеры (если у принтера есть вентилятор M106 P3)
+  bool air_filtration = false;
+  double exhaust_print = 0.6, exhaust_end = 0.8;  // доли: во время печати и после
   // откат: отрицательное — как у принтера
   double retract_length = -1, retract_speed = -1;
   double pressure_advance = -1;  // Klipper: SET_PRESSURE_ADVANCE; отрицательное — не задавать
+  std::string start_gcode, end_gcode;  // код пластика: после стартового кода принтера и перед финальным
 };
 
 const std::vector<Printer>& printers();
@@ -148,6 +177,24 @@ std::string_view seam_key(Seam s);  // aligned, nearest, rear, random
 std::optional<Seam> seam_from_key(std::string_view key);
 std::string_view seam_name(Seam s);
 
+// Нечёткая поверхность: стенка дрожит внутрь и наружу — шершавая, как под пескоструй, поверхность
+// без следов слоёв. Ключи — как в OrcaSlicer.
+enum class FuzzySkin {
+  None,      // нет
+  Contour,   // наружный контур (external)
+  External,  // наружные стенки: контур и отверстия (all)
+  All,       // все стенки (allwalls)
+};
+std::string_view fuzzy_key(FuzzySkin f);  // none, external, all, allwalls
+std::optional<FuzzySkin> fuzzy_from_key(std::string_view key);
+std::string_view fuzzy_name(FuzzySkin f);
+
+// Кайма: снаружи детали, внутри отверстий или и там и там (ключи — как в OrcaSlicer).
+enum class BrimType { Outer, Inner, Both, None };
+std::string_view brim_key(BrimType b);  // outer_only, inner_only, outer_and_inner, no_brim
+std::optional<BrimType> brim_from_key(std::string_view key);
+std::string_view brim_name(BrimType b);
+
 struct Settings {
   Printer printer = default_printer();
   Filament filament = filament_preset("PETG");
@@ -160,6 +207,12 @@ struct Settings {
   int wall_loops = 2;
   bool outer_wall_first = false;  // сначала наружная стенка (точнее размеры), иначе изнутри наружу
   Seam seam = Seam::Aligned;
+  double seam_gap = 0.1;          // замкнутая стенка обрывается на столько раньше шва, доля диаметра сопла
+  // нечёткая поверхность
+  FuzzySkin fuzzy_skin = FuzzySkin::None;
+  double fuzzy_thickness = 0.3;   // мм: полоса, в которой гуляет стенка
+  double fuzzy_point_dist = 0.8;  // мм: шаг точек
+  bool spiral_vase = false;       // ваза: одна стенка спиралью без швов, без верха и заполнения
   int top_layers = 5;
   int bottom_layers = 3;
   double top_thickness = 0, bottom_thickness = 0;  // мм: сплошных слоёв не меньше этой толщины (0 — только по числу)
@@ -180,15 +233,23 @@ struct Settings {
   double infill_angle = 45;      // градусы
   bool alternate_solid = true;   // сплошные слои: угол через слой ±90° (иначе все под infill_angle)
   double infill_overlap = 0.15;  // заход разреженного заполнения на стенки, доля ширины линии
+  double min_sparse_area = 15;   // мм²: кусок заполнения меньше — сплошной (крепче мелкие перемычки)
   bool skirt = true;
   int skirt_loops = 1;
   double skirt_distance = 3;     // мм
   int skirt_layers = 1;          // высота юбки, слоёв
+  BrimType brim_type = BrimType::Outer;
   double brim_width = 0;         // кайма вокруг первого слоя, мм (0 — нет)
   double brim_gap = 0.1;         // зазор между каймой и деталью, мм
+  // подложка (raft): несколько слоёв под деталью; деталь — на ней
+  int raft_layers = 0;
+  double raft_contact_distance = 0.1;  // зазор между подложкой и деталью, мм
+  double raft_expansion = 1.5;         // подложка шире первого слоя детали на столько, мм
   // скорости, мм/с (прижимаются к пределам принтера и пластика)
   double speed_outer_wall = 200, speed_inner_wall = 300, speed_solid = 250, speed_top = 200, speed_sparse = 270;
   double speed_first_layer = 50, speed_first_layer_infill = 50, speed_travel = 500;
+  double speed_first_layer_travel = 0;  // перемещения на первом слое (0 — как на остальных)
+  bool overhang_slowdown = true;  // замедлять нависающие стенки до speed_overhang
   double speed_overhang = 30;    // нависающие стенки
   double speed_bridge = 50;      // мосты: сплошные слои над пустотой
   double speed_ironing = 30;
@@ -210,8 +271,24 @@ struct Settings {
   // служебное
   bool label_objects = true;     // Klipper: EXCLUDE_OBJECT — отмена детали, карта стола только под ней
   bool reduce_retraction = true; // без отката, если перемещение целиком внутри детали
+  std::string pause_layers;      // пауза перед слоями: номера с 1 через запятую или пробел («12, 30»)
+  // Имя файла G-code: {input_filename_base}, {filament_type}, {layer_height}, {nozzle_diameter},
+  // {printer_model}, {print_time}, {total_weight}, {timestamp} — как в OrcaSlicer.
+  std::string filename_format = "{input_filename_base}.gcode";
+  std::string notes;             // заметки — пишутся в G-code комментарием
   std::string generated_at;      // «2026-10-12 at 23:00:00» для шапки (Moonraker узнаёт по ней сведения о печати)
 };
+
+// Номера слоёв для паузы из строки «12, 30 45» (с 1, по возрастанию, без повторов). Ошибка — пусто
+// и текст в err.
+std::vector<int> parse_layer_list(std::string_view text, std::string* err = nullptr);
+std::string layer_list_text(const std::vector<int>& layers);
+
+// Запретная область стола: многоугольники из строки «0x0,11x0,11x16,0x16» (несколько — через «;»).
+// Ошибка — пусто и текст в err.
+std::vector<std::vector<std::array<double, 2>>> parse_bed_exclude(std::string_view text, std::string* err = nullptr);
+// Сколько деталь (сетка уже на столе) заходит в запретную область стола принтера, мм² по проекции на стол.
+double bed_exclude_overlap(const Printer& p, const geometry::TriangleMesh& placed);
 
 // Ход нарезки: доля 0…1 и текст для человека. Бросить исключение — прервать.
 using Progress = std::function<void(double fraction, std::string_view text)>;
@@ -234,6 +311,11 @@ Result slice(const geometry::TriangleMesh& mesh, const Settings& s, const Progre
 
 // Текущее время для шапки G-code (Settings::generated_at): «2026-10-12 at 23:00:00».
 std::string now_stamp();
+
+// Имя файла G-code по Settings::filename_format: model — имя модели без расширения; r — итоги
+// нарезки для {print_time} и {total_weight} (без них — пусто). Запрещённые в именах файлов знаки
+// заменяются «_», расширение .gcode добавляется, если его нет.
+std::string output_filename(const Settings& s, std::string_view model, const Result* r = nullptr);
 
 // Контуры сечения сетки плоскостью Z = z (для проверок и окна): замкнутые многоугольники,
 // внешние — против часовой стрелки, отверстия — по часовой.

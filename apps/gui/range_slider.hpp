@@ -1,6 +1,7 @@
 #pragma once
 // Вертикальный ползунок с двумя ручками — диапазон слоёв предпросмотра (нижний и верхний слой),
-// как в OrcaSlicer. Колесо и стрелки двигают верхнюю ручку, с Shift — нижнюю. Без moc.
+// как в OrcaSlicer. Колесо и стрелки двигают верхнюю ручку, с Shift — нижнюю. Отметки — слои с
+// паузой. Без moc.
 
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <functional>
 #include <tuple>
+#include <vector>
 
 namespace kika::gui {
 
@@ -42,6 +44,11 @@ class RangeSlider : public QWidget {
     update();
     if (on_change) on_change(lo_, hi_);
   }
+  // Отметки у дорожки (номера слоёв с нуля) — паузы.
+  void set_marks(std::vector<int> marks) {
+    marks_ = std::move(marks);
+    update();
+  }
   // Подпись у ручки: номер слоя и высота.
   std::function<QString(int)> label;
   std::function<void(int, int)> on_change;
@@ -59,6 +66,10 @@ class RangeSlider : public QWidget {
     const double ylo = y_of(lo_), yhi = y_of(hi_);
     p.setBrush(dark);
     p.drawRoundedRect(QRectF(x - 2, yhi, 4, ylo - yhi), 2, 2);
+    // паузы: оранжевые черты поперёк дорожки
+    p.setBrush(QColor(0xeb, 0x68, 0x34));
+    for (int m : marks_)
+      if (m >= 0 && m < n_) p.drawRoundedRect(QRectF(x - 8, y_of(m) - 1.5, 16, 3), 1.5, 1.5);
     QFont f = font();
     f.setPixelSize(11);
     p.setFont(f);
@@ -138,6 +149,7 @@ class RangeSlider : public QWidget {
 
   int n_ = 0, lo_ = 0, hi_ = 0;
   int drag_ = 0;  // 1 — нижняя ручка, 2 — верхняя
+  std::vector<int> marks_;
 };
 
 }  // namespace kika::gui

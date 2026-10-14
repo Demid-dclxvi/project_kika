@@ -3,11 +3,13 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSlider>
@@ -261,18 +263,38 @@ void MainWindow::render_prepare() {
   const auto box = placed_box(mesh, t);
   const auto& pr = print_ui_.settings.printer;
   const double eps = 1e-6;
-  const bool fits = box.min[0] >= -eps && box.min[1] >= -eps && box.max[0] <= pr.bed_x + eps && box.max[1] <= pr.bed_y + eps &&
-                    box.max[2] <= pr.max_z + eps;
+  const bool inside = box.min[0] >= -eps && box.min[1] >= -eps && box.max[0] <= pr.bed_x + eps && box.max[1] <= pr.bed_y + eps &&
+                      box.max[2] <= pr.max_z + eps;
+  // запретная область стола (у QIDI Q2 — угол с резом прутка): по точному следу детали
+  double banned = 0;
+  if (!pr.bed_exclude.empty()) {
+    geometry::TriangleMesh placed = mesh;
+    placed.transform(t);
+    banned = slicer::bed_exclude_overlap(pr, placed);
+  }
+  const bool fits = inside && banned < 0.01;
   plate_->set_placement(t, fits);
   const auto sz = box.size();
   plate_->set_info({QString("%1 × %2 × %3 мм").arg(fmtq(sz[0], 1), fmtq(sz[1], 1), fmtq(sz[2], 1))});
-  fit_warn_->setText(QString("Деталь не помещается в область печати %1 (%2 × %3 × %4 мм) — передвиньте, поверните или "
-                             "уменьшите её.")
-                         .arg(qs(pr.name), fmtq(pr.bed_x, 0), fmtq(pr.bed_y, 0), fmtq(pr.max_z, 0)));
+  if (!inside)
+    fit_warn_->setText(QString("Деталь не помещается в область печати %1 (%2 × %3 × %4 мм) — передвиньте, поверните или "
+                               "уменьшите её.")
+                           .arg(qs(pr.name), fmtq(pr.bed_x, 0), fmtq(pr.bed_y, 0), fmtq(pr.max_z, 0)));
+  else if (!fits)
+    fit_warn_->setText(QString("Деталь заходит в запретную область стола %1 (отмечена красным: там механизм принтера) — "
+                               "передвиньте её.")
+                           .arg(qs(pr.name)));
   fit_warn_->setVisible(!fits);
   const auto& im = *source_->mesh;
+  // заголовок — имя файла; имя тела из файла — если оно что-то говорит (не «geometry_0», «Object 1»)
+  QString title = QFileInfo(gcode_path_).completeBaseName();
+  const QString body = qs(im.name);
+  static const QRegularExpression generic("^(geometry|object|mesh|body|part|solid)[ _-]?\\d*$",
+                                          QRegularExpression::CaseInsensitiveOption);
+  if (title.isEmpty()) title = body.isEmpty() ? QString("деталь") : body;
+  else if (!body.isEmpty() && body != title && !generic.match(body).hasMatch()) title += " · " + body;
   prep_info_->setText(QString("<b>%1</b><br>%2 · %3 треуг. · %4 см³")
-                          .arg(esc(im.name.empty() ? std::string("деталь") : im.name), esc(im.format),
+                          .arg(title.toHtmlEscaped(), esc(im.format),
                                ru_int(static_cast<long long>(im.mesh.triangles.size())),
                                fmtq(im.mesh.volume() * print_ui_.scale[0] * print_ui_.scale[1] * print_ui_.scale[2] / 1000, 2)));
   prep_box_->show();
@@ -479,6 +501,23 @@ QWidget* MainWindow::build_preview_page() {
   preview_warns_->setSpacing(6);
   v->addLayout(preview_warns_);
   v->addSpacing(4);
+  // пауза на слое (как «Добавить паузу» на ползунке слоёв Orca): вложить гайку, сменить пластик
+  v->addWidget(make_label("Пауза", "groupTitle", false));
+  btn_pause_ = make_button("Пауза перед слоем", "sm");
+  btn_pause_->setToolTip("Принтер встанет на паузу перед верхним показанным слоем — вложить гайку или магнит, сменить "
+                         "пластик; продолжить — кнопкой на принтере. Деталь нарежется заново.");
+  connect(btn_pause_, &QPushButton::clicked, this, [this] { toggle_pause(); });
+  v->addWidget(btn_pause_, 0, Qt::AlignLeft);
+  pause_info_ = make_hint("");
+  pause_info_->setTextFormat(Qt::RichText);
+  connect(pause_info_, &QLabel::linkActivated, this, [this](const QString&) {
+    print_ui_.settings.pause_layers.clear();
+    settings_->set_settings(print_ui_.settings);
+    render_slice_state();
+    reslice();
+  });
+  v->addWidget(pause_info_);
+  v->addSpacing(4);
   v->addWidget(make_label("Печать", "groupTitle", false));
   btn_print_ = make_button("Печать на принтере", "primary");
   btn_print_->setToolTip("Отправить G-code на принтер (Klipper, Moonraker) и начать печать — с подтверждением");
@@ -508,9 +547,13 @@ QWidget* MainWindow::build_preview_page() {
 }
 
 void MainWindow::set_preview(std::shared_ptr<const app::Preview> p) {
+  // та же деталь нарезана заново (пауза, настройки) — ползунок слоёв остаётся где был
+  const int old_n = layer_slider_->count(), lo = layer_slider_->lower(), hi = layer_slider_->upper();
   preview_ = std::move(p);
   pview_->set_preview(preview_, preview_view_);
-  layer_slider_->set_count(preview_ ? static_cast<int>(preview_->layers.size()) : 0);
+  const int n = preview_ ? static_cast<int>(preview_->layers.size()) : 0;
+  layer_slider_->set_count(n);
+  if (n > 0 && n == old_n && (lo > 0 || hi < n - 1)) layer_slider_->set_range(lo, hi);
   apply_layers();
   render_preview();
 }
@@ -642,6 +685,47 @@ void MainWindow::apply_layers() {
   pview_->set_info({QString("Слой %1 из %2 · Z %3 мм").arg(hi + 1).arg(p.layers.size()).arg(fmtq(L.z, 2)),
                     QString("высота %1 мм · время слоя %2").arg(fmtq(L.height, 2), qs(app::fmt_duration(L.time)))});
   layer_info_->setText(lo > 0 ? QString("Показаны слои %1–%2.").arg(lo + 1).arg(hi + 1) : QString());
+  render_pauses();
+}
+
+// Паузы: отметки на ползунке, кнопка для верхнего слоя, список.
+void MainWindow::render_pauses() {
+  if (!btn_pause_) return;
+  const auto list = slicer::parse_layer_list(print_ui_.settings.pause_layers);
+  std::vector<int> marks;
+  for (int k : list) marks.push_back(k - 1);
+  layer_slider_->set_marks(source_ ? marks : std::vector<int>{});
+  const bool has = preview_ && !preview_->empty();
+  const int layer = has ? layer_slider_->upper() + 1 : 0;
+  const bool on = std::find(list.begin(), list.end(), layer) != list.end();
+  btn_pause_->setText(on ? QString("Убрать паузу перед слоем %1").arg(layer)
+                         : (layer > 1 ? QString("Пауза перед слоем %1").arg(layer) : QString("Пауза перед слоем")));
+  btn_pause_->setEnabled(source_.has_value() && has && layer > 1 && !busy_);
+  btn_pause_->setVisible(source_.has_value() || !model_);
+  QString info;
+  if (!source_ && model_)
+    info = "Паузы ставятся в своей нарезке: откройте модель (STL, 3MF, STEP).";
+  else if (!list.empty())
+    info = QString("Паузы перед слоями: %1 · код паузы: %2 · <a href='clear'>убрать все</a>")
+               .arg(qs(slicer::layer_list_text(list)),
+                    esc(print_ui_.settings.printer.pause_gcode.empty() ? std::string("—") : print_ui_.settings.printer.pause_gcode));
+  pause_info_->setText(info);
+  pause_info_->setVisible(!info.isEmpty());
+}
+
+void MainWindow::toggle_pause() {
+  if (!source_ || !preview_ || preview_->empty() || busy_) return;
+  auto list = slicer::parse_layer_list(print_ui_.settings.pause_layers);
+  const int layer = layer_slider_->upper() + 1;
+  if (const auto it = std::find(list.begin(), list.end(), layer); it != list.end())
+    list.erase(it);
+  else
+    list.push_back(layer);
+  std::sort(list.begin(), list.end());
+  print_ui_.settings.pause_layers = slicer::layer_list_text(list);
+  settings_->set_settings(print_ui_.settings);
+  render_slice_state();
+  reslice();
 }
 
 void MainWindow::send_to_printer(bool start) {

@@ -47,6 +47,8 @@ struct Field {
   double scale = 1;       // показ = значение × scale
   bool advanced = false;  // тонкая настройка: в окне — только в режиме «Все настройки»
   std::vector<FieldChoice> choices;
+  // Проверка строки (Text): ошибка по-русски или пусто; не задана — любая строка.
+  std::function<std::string(std::string_view)> check_text;
   // Вариант: ключ из JSON (с синонимами, например zig-zag) → ключ из choices; пусто — нет такого.
   std::function<std::string(std::string_view)> canonical;
   // Значение в единицах показа (числа), строка или ключ варианта.

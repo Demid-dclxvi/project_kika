@@ -302,6 +302,19 @@ void PlateView::build_bed() {
   push_l(bed_lines_, {bx, 0, z}, {bx, by, z}, edge);
   push_l(bed_lines_, {bx, by, z}, {0, by, z}, edge);
   push_l(bed_lines_, {0, by, z}, {0, 0, z}, edge);
+  // запретная область стола (у QIDI Q2 — угол с механизмом реза): красноватая заливка и контур
+  {
+    const app::Rgb zf = app::rgb(0xF1C9B8), ze = app::rgb(0xC2410C);
+    for (const auto& poly : slicer::parse_bed_exclude(printer_.bed_exclude)) {
+      for (std::size_t i = 1; i + 1 < poly.size(); ++i)
+        for (const auto* v : {&poly[0], &poly[i], &poly[i + 1]}) push_v(bed_fill_, (*v)[0], (*v)[1], z - 0.03, zf);
+      for (std::size_t i = 0; i < poly.size(); ++i) {
+        const auto& a = poly[i];
+        const auto& b = poly[(i + 1) % poly.size()];
+        push_l(bed_lines_, {a[0], a[1], z + 0.01}, {b[0], b[1], z + 0.01}, ze);
+      }
+    }
+  }
   // область печати — тонкий каркас
   const app::Rgb vc = app::rgb(0xB9BCB2);
   for (const auto& [x, y] : {std::pair{0.0, 0.0}, std::pair{bx, 0.0}, std::pair{bx, by}, std::pair{0.0, by}})

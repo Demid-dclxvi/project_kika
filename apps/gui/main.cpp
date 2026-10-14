@@ -122,6 +122,9 @@ QFrame#busyStrip { background: #ffffff; border: none; border-bottom: 1px solid #
 QFrame#settingsPanel, QWidget#settingsBody, QScrollArea#settingsScroll { background: #f1f1ee; }
 QFrame#settingsPanel { border: none; border-right: 1px solid #dfe0da; }
 QLabel#groupTitle { font-weight: 600; font-size: 12px; color: #16181b; padding-top: 2px; }
+QLabel[modified="true"], QCheckBox[modified="true"] { color: #c2410c; }
+QPushButton#resetField { color: #c2410c; font-size: 14px; padding: 0 2px; }
+QLineEdit#search { padding: 5px 8px; }
 QFrame#pageSeg { background: #ebebe6; border-radius: 8px; }
 QPushButton[cls="page"] { background: transparent; border: none; border-radius: 6px; padding: 5px 0; font-size: 11px; }
 QPushButton[cls="page"]:hover { background: #dfe0da; }
@@ -199,6 +202,8 @@ void usage() {
                "  --color РАСКРАСКА    предпросмотр: type, speed, flow, width, height, fan, layer_time\n"
                "  --layers С:ПО        предпросмотр: слои с … по … (с 1; 0 — последний)\n"
                "  --set КЛЮЧ=ЗНАЧЕНИЕ  настройка печати (как в kika settings) — и нарезать заново\n"
+               "  --find ТЕКСТ         поиск в панели настроек печати\n"
+               "  --page СТРАНИЦА      страница панели настроек: Качество, Прочность, Скорость, Поддержки, Прочее\n"
                "  --scale K[,K,K]      масштаб детали — и нарезать заново\n"
                "  --move X,Y           центр детали на столе, мм — и нарезать заново\n"
                "  --lay X,Y            положить деталь на грань под точкой вида «Подготовка» — и нарезать\n"
@@ -376,6 +381,12 @@ int main(int argc, char** argv) {
         return 2;
       }
       script.sets.emplace_back(v.left(eq).toStdString(), v.mid(eq + 1).toStdString());
+      scripted = true;
+    } else if (a == "--find") {
+      script.find = next();
+      scripted = true;
+    } else if (a == "--page") {
+      script.page = next().toStdString();
       scripted = true;
     } else if (a == "--scale") {
       const QStringList parts = next().split(',');

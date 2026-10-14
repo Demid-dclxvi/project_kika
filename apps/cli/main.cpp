@@ -325,8 +325,10 @@ int cmd_info(const std::string& file_arg, bool as_json) {
 // ---------------------------------------------------------------------------
 // kika slice
 
+// Нарезать модель; out — итоги и настройки (для имени файла на принтере), если нужны.
 std::string slice_model(const fs::path& model_path, const Value* print, const std::string& material,
-                        const std::optional<std::string>& gcode_out, bool quiet);
+                        const std::optional<std::string>& gcode_out, bool quiet, kika::slicer::Result* out = nullptr,
+                        kika::slicer::Settings* used = nullptr);
 
 const std::vector<Option> kSliceOptions = {
     {{"-o", "--out"}, true},  {{"--printer"}, true},     {{"--filament"}, true},     {{"--layer"}, true},
@@ -382,6 +384,16 @@ Value print_from_args(const Args& a) {
     } catch (...) {
       v = text == "true" || text == "да" ? Value(true) : text == "false" || text == "нет" ? Value(false) : Value(text);
     }
+    // текстовая настройка (паузы «20», имя файла, G-code) — строкой, даже если похожа на число
+    {
+      auto section = kika::slicer::Section::Process;
+      std::string bare = key;
+      if (key.starts_with("printer.")) section = kika::slicer::Section::Printer, bare = key.substr(8);
+      if (key.starts_with("filament.")) section = kika::slicer::Section::Filament, bare = key.substr(9);
+      if (const auto* f = kika::slicer::find_field(section, bare);
+          f && (f->kind == kika::slicer::FieldKind::Text || f->kind == kika::slicer::FieldKind::Code))
+        v = Value(text);
+    }
     for (const char* sec : {"printer", "filament"}) {
       const std::string prefix = std::string(sec) + ".";
       if (key.starts_with(prefix)) {
@@ -417,9 +429,13 @@ int cmd_slice(const std::string& model_arg, const Args& a) {
   const Value pr = print_from_args(a);
   const std::string out = a.value("--out").value_or(utf8_from_path(default_gcode_path(model)));
   std::cout << "Модель: " << utf8_from_path(model) << std::endl;
-  const std::string gcode = slice_model(model, &pr, "PETG", out, a.flag("--quiet"));
+  kika::slicer::Result res;
+  kika::slicer::Settings used;
+  const std::string gcode = slice_model(model, &pr, "PETG", out, a.flag("--quiet"), &res, &used);
   if (auto addr = a.value("--send")) {
-    const std::string name = a.value("--name").value_or(utf8_from_path(model.stem()));
+    // имя на принтере — по настройке «Имя файла» (как в Orca), если не задано --name
+    const std::string name =
+        a.value("--name").value_or(kika::slicer::output_filename(used, utf8_from_path(model.stem()), &res));
     return send_gcode(gcode, name, *addr, a.value("--key").value_or(""), a.flag("--start"));
   }
   if (a.flag("--start")) throw UsageError("--start — вместе с --send АДРЕС: куда отправить");
@@ -749,7 +765,8 @@ void dump_arrays(const fs::path& dir, const kika::analysis::Model& model,
 
 // Модель → своя нарезка → текст G-code (и файл, если просили).
 std::string slice_model(const fs::path& model_path, const Value* print, const std::string& material,
-                        const std::optional<std::string>& gcode_out, bool quiet) {
+                        const std::optional<std::string>& gcode_out, bool quiet, kika::slicer::Result* out,
+                        kika::slicer::Settings* used) {
   auto im = kika::geometry::load_model(model_path);
   const auto sz = im.mesh.bbox().size();
   std::cout << std::format("  {}: {} треугольников, габарит {} × {} × {} мм, объём {} см³\n", im.format,
@@ -780,13 +797,18 @@ std::string slice_model(const fs::path& model_path, const Value* print, const st
   const auto r = kika::slicer::slice(kika::slicer::placed(im.mesh, pj), s, prog, utf8_from_path(model_path.stem()));
   for (const auto& w : r.warnings) std::cout << "  ⚠ " << w << "\n";
   std::cout << std::format("  слоёв {}, пруток {} м ({} г{}), печать примерно {} ч {} мин\n", r.layers,
-                           num(r.filament_mm / 1000, 2), num(r.filament_g, 0),
+                           num(r.filament_mm / 1000, 2), num(r.filament_g, r.filament_g < 10 ? 1 : 0),
                            r.support_g > 0 ? std::format(", из них поддержки {} г", num(r.support_g, 1)) : std::string(),
                            static_cast<int>(r.print_time_s / 3600), static_cast<int>(std::fmod(r.print_time_s, 3600) / 60));
   if (r.cost > 0) std::cout << std::format("  стоимость пластика ≈ {}\n", num(r.cost, 0));
   if (gcode_out) {
     write_file(path_from_utf8(*gcode_out), r.gcode);
     std::cout << "  G-code: " << *gcode_out << "\n";
+  }
+  if (used) *used = s;
+  if (out) {
+    *out = r;
+    out->gcode.clear();
   }
   return r.gcode;
 }

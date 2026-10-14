@@ -122,7 +122,13 @@ TEST_CASE("Слайсер: не помещается на стол, пласти
   s.filament = kika::slicer::filament_preset("PC");
   s.filament.nozzle_temp = 380;  // QIDI Q2 — до 370 °C
   const auto r = kika::slicer::slice(m, s);
-  CHECK(r.warnings.size() == 2);
+  // не помещается; горячее предела принтера; горячее рекомендуемого для PC; брусок от угла стола —
+  // в запретной области QIDI Q2 (рез прутка)
+  REQUIRE(r.warnings.size() == 4);
+  CHECK(r.warnings[0].find("выше предела принтера") != std::string::npos);
+  CHECK(r.warnings[1].find("вне рекомендуемой") != std::string::npos);
+  CHECK(r.warnings[2].find("не помещается") != std::string::npos);
+  CHECK(r.warnings[3].find("запретную область") != std::string::npos);
 }
 
 TEST_CASE("Слайсер + расчёт: консольная балка по аналитике", "[slicer][cantilever]") {
